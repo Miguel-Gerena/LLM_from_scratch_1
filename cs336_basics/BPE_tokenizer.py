@@ -5,16 +5,41 @@ from collections import defaultdict, OrderedDict
 import heapq
 import json
 
-def get_regex_pattern() -> str: 
-    return re.compile(r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
+def get_regex_pattern(pattern:str) -> str: 
+    reg: str = ""
+    if pattern == "GPT2":
+        reg = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+    elif pattern == "GPT4":
+        reg = r"""'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?+\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]++[\r\n]*|\s*[\r\n]|\s+(?!\S)|\s+"""
+    elif pattern == "BPE_Example":
+        reg = r"""\S"""
+    else:
+        raise NotImplementedError
+    return re.compile(reg)
 
-def pre_tokenize(pattern:str, filename:str, endLine:bool=False) -> str:
-    with open(filename, "r") as F:
-        if not endLine:
-            pre_tokenized_output:str = "".join(re.findall(pattern, "".join(line + " " for line in F.read().splitlines())))
+def pre_tokenize(pattern:str, filename:str, endLine:bool=True) -> List[str]:
+    with open(filename, "r", encoding="utf-8") as F:
+        if not endLine:  # Make sure to keep each word separate. Do not concat string
+            pre_tokenized_output:List[str] = re.findall(pattern, "".join(line + " " for line in F.read().splitlines()))
         else:
-            pre_tokenized_output:str = "".join(re.findall(pattern, F.read()))
-    return pre_tokenized_output.strip()
+            pre_tokenized_output:List[str] = re.findall(pattern, F.read())
+    return pre_tokenized_output
+
+def build_pairs_and_locations(indices: List[int], counts_and_locations: Dict[Tuple[int, int], list], index: int) -> Dict[Tuple[int, int], list]:
+    for pair in zip(indices, indices[1:]):
+        counts_and_locations[pair] = counts_and_locations.get(pair, [0, []])
+        counts_and_locations[pair][0] += 1
+        counts_and_locations[pair][1].append(index)
+    return counts_and_locations
+
+def save_merges_and_vocab(merges: List[Tuple[int, int]], vocab:dict[int, int], prefix="") -> None:
+        with open(f"{prefix}_merges.txt", "w") as f:
+            for key, val in merges:
+                f.write(f"({key} {val})\n")
+        
+        with open(f"{prefix}_vocab.txt", "w") as f:
+            for key, val in vocab.items():
+                f.write(f"({key}:{val})\n")
 
 
 @dataclass(frozen=True)
@@ -36,50 +61,37 @@ def merge(indices: List[int], pair: Tuple[(int, int)], new_index: int) -> List[i
 
 
 def train_BPE(input_path:str, vocab_size:int, special_tokens:List[str]) -> Tuple[Dict[int, bytes], List[Tuple[bytes, bytes]]]:
-        regex:re.Pattern = get_regex_pattern()
-        pre_tokenized = pre_tokenize(regex, input_path)
-        print(pre_tokenized)
+        regex:re.Pattern = get_regex_pattern("GPT4")
+        pre_tokenized: List[str] = pre_tokenize(regex, input_path)
         # with open(input_path, "r") as text:
             # pre_tokenized = F.read().encode("utf-8")
-        pre_tokenized_bytes:bytes = pre_tokenized.encode("utf-8")
-        del pre_tokenized
+        counts_and_locations: Dict[Tuple[int,int], list] = {}
+        heap: List[Tuple[int, Tuple[int, int]]] = []
+
         vocab: Dict[int, bytes]  = {i:bytes(special_tokens[i].encode("utf-8")) for i in range(len(special_tokens))}
 
-        location_indices: OD = OrderedDict()  #Ordered so we can use it as LRU cache when we hit vocab limit
-        indices: list = []
+        indices: List[List[int]] = []
         merges: List[Tuple[bytes, bytes]] = []
         for x in range(256):
             vocab[x + len(special_tokens)] = bytes([x])
 
-        for i in range(len(pre_tokenized_bytes)):
-            index = int(pre_tokenized_bytes[i])
-            indices.append(index)
-            not_new_slice: list = location_indices.get(index, [])
-            if not_new_slice:
-                location_indices[index].append(i)
-            else:
-                not_new_slice.append(i)
-                location_indices[index] = not_new_slice
+        for i in range(len(pre_tokenized)):
+            word_ints: List[int] = list(pre_tokenized[i].encode("utf-8"))
+            indices.append(word_ints)
+            counts_and_locations = build_pairs_and_locations(word_ints, counts_and_locations, i)
+                
+        for key, value in counts_and_locations.items():
+            heapq.heappush(heap, (-value[0], key))
 
         start_index = len(vocab)
-        counts: DefaultDict[Tuple[int, int], int] = defaultdict(int)
-        heap: List[Tuple[int, Tuple[int, int]]] = []
-        for pair in zip(indices, indices[1:]):
-            counts[pair] += 1
-        
-        for key, value in counts.items():
-            heapq.heappush(heap, (-value, key))
-        
-
-        curr_index = 0
-        while heap and len(vocab) < vocab_size:
+        num_merges = vocab_size - start_index
+        for idx in range(num_merges):
             #most common pair maybe need to add ordering logic in case of ties
             pair: Tuple[int, int]  = (0, 0)
             max_counts: int = 0
-
             max_counts, pair = heapq.heappop(heap)
 
-            ties: List[Tuple[str, Tuple[int, int]]] = [("".join([vocab[x].decode("utf-8") for x in pair]), pair)]
+            ties: List[Tuple[str, Tuple[int, int]]] = [("".join([vocab[x].decode("utf-8", errors="replace") for x in pair]), pair)]
             while heap[0][0] == max_counts:
                 next_pair: Tuple[int, int] = heapq.heappop(heap)[1]
                 ties.append(("".join([vocab[x].decode("utf-8") for x in next_pair]), next_pair))
@@ -91,55 +103,15 @@ def train_BPE(input_path:str, vocab_size:int, special_tokens:List[str]) -> Tuple
                 else:
                     heapq.heappush(heap, (max_counts, sorted_ties[i][1]))
 
-            new_index = start_index + curr_index
-            curr_index += 1
+            new_index = start_index + i
             merges.append((vocab[pair[0]], vocab[pair[1]]))
             vocab[new_index] = vocab[pair[0]] + vocab[pair[1]]
 
             indices = merge(indices, pair, new_index)
 
-
-            # if len(vocab) > vocab_size:
-            #     vocab.pop(location_indices.popitem(last=False)[0]) # LRU removal scheme
-        # with open("merges.txt", "w") as F:
-        #     for merge_item in merges:
-        #         F.write(f"{merge_item[0]} {merge_item[1]}\n" )
-        # jsondump = {}
-        # for key, value in vocab.items():
-        #     jsondump[value.decode("utf-8")] = key
-
-        
-        # with open("vocab.json", "w") as F:
-        # #     json.dump(jsondump, F)
-        # with open("my_merges2.txt", "w") as f:
-        #     for key, val in merges:
-        #         f.write(f"({key} {val})\n")
-        
-        # with open("my_vocab2.txt", "w") as f:
-        #     for key, val in vocab.items():
-        #         f.write(f"({key}:{val})\n")
-
+        save_merges_and_vocab(merges, vocab, prefix="taylorswift")
         
         return vocab, merges
-# class BPETokenizer():
-#     def __init__(self, input_path:str, vocab_size:int, special_tokens:List[str]) -> Tuple[Dict[int, bytes], List[Tuple[bytes, bytes]]]:
-#         pass
 
-#     def encode(self, text: str) -> List[int]:
-#         pre_tokenized = pre_tokenize(get_regex_pattern(), self.input_path)
-#         # Note: this is a very slow implementation
-#         for pair, new_index in self.params.merges.items():
-#             indices = merge(indices, pair, new_index)
-#         return indices
-
-#     def decode(self, indices: List[int]) -> str:
-#         bytes_list = list(map(self.vocab.get, indices))
-#         text = b"".join(bytes_list).decode("utf-8")
-#         return text
-
-
-# pattern = get_regex_pattern()
-# print(pre_tokenize(pattern, "test.txt"))
-
-vocab, merges = train_BPE("tests/fixtures/corpus.en", 500, ['<|endoftext|>'])
+vocab, merges = train_BPE("minbpe/tests/taylorswift.txt", 512, [])
 
