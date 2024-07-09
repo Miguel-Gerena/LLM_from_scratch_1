@@ -1,9 +1,8 @@
 import regex as re
 from dataclasses import dataclass
-from typing import List,Tuple, Dict, DefaultDict, OrderedDict as OD
-from collections import defaultdict, OrderedDict
+from typing import List,Tuple, Dict, DefaultDict, Deque, Set, OrderedDict as OD
+from collections import defaultdict, OrderedDict, deque
 import heapq
-import json
 
 def get_regex_pattern(pattern:str) -> str: 
     reg: str = ""
@@ -32,7 +31,7 @@ def build_pairs_and_locations(indices: List[int], counts_and_locations: Dict[Tup
         counts_and_locations[pair][1].append(index)
     return counts_and_locations
 
-def save_merges_and_vocab(merges: List[Tuple[int, int]], vocab:dict[int, int], prefix="") -> None:
+def save_merges_and_vocab(merges: List[Tuple[bytes, bytes]], vocab:dict[int, bytes], prefix="") -> None:
         with open(f"{prefix}_merges.txt", "w") as f:
             for key, val in merges:
                 f.write(f"({key} {val})\n")
@@ -47,27 +46,58 @@ class BPETokenizerParams:
     vocab: Dict[int, bytes]            
     merges: Dict[Tuple[int, int], int]  
 
-def merge(indices: List[int], pair: Tuple[(int, int)], new_index: int) -> List[int]:
-    new_indices: List[int] = []
-    i: int = 0
-    while i < len(indices):
-        if i + 1 < len(indices) and (indices[i],indices[i+1]) == pair:
-            new_indices.append(new_index)
-            i += 2
-        else:
-            new_indices.append(indices[i])
-            i += 1
-    return new_indices
+def merge(indices: List[List[int]], pair: Tuple[(int, int)], new_index: int, counts_and_locations: Dict[Tuple[int, int], list], negatives: Set[Tuple[int, int]]) -> Tuple[List[List[int]],  Dict[Tuple[int, int], list],  List[Tuple[int, int]], Set[Tuple[int, int]]]:
+    locations_to_replace = counts_and_locations.pop(pair)[1]  # get only the locations, the counts will not matter anymore since we are merging
+    pairs_to_update_counts: List[Tuple[int, int]] = [ ]
+    for indices_index in locations_to_replace:
+        new_pair: Deque = deque([])
+        word_ints = deque(indices[indices_index])
+        new_indices: List[int] = []
+
+        while word_ints:
+            popped_number: int = word_ints.popleft()
+            new_pair.append(popped_number)
+            new_indices.append(popped_number)
+
+            if len(new_pair) > 1 and new_pair[0] == pair[0] and new_pair[1] == pair[1]:
+                if len(new_indices) > 2:
+                    negatives.add((new_indices[-3], new_indices[-2]))
+                if word_ints:
+                    negatives.add((new_indices[-1], word_ints[0]))
+                new_indices.pop()
+                new_indices.pop()
+                new_indices.append(new_index)
+                new_pair = deque([new_index])
+
+            if new_indices:
+                pair_to_update: Tuple[int, int] = ()
+                if new_indices[-1] == new_index:
+                    pair_to_update: Tuple[int, int] = tuple(new_indices[-2:])
+                elif len(new_indices) > 1 and new_indices[-2] ==  new_index:
+                    pair_to_update: Tuple[int, int] = tuple(new_indices[-2:])
+                
+                if len(pair_to_update) == 2:
+                    counts_and_locations[pair_to_update] = counts_and_locations.get(pair_to_update, [0, []])
+                    counts_and_locations[pair_to_update][0] += 1
+                    counts_and_locations[pair_to_update][1].append(indices_index)
+                    if pair_to_update not in pairs_to_update_counts:
+                        pairs_to_update_counts.append(pair_to_update)
+            
+            if len(new_pair) == 2:
+                new_pair.popleft()
+
+        indices[indices_index] = new_indices.copy()
+
+    return indices, counts_and_locations, pairs_to_update_counts, negatives
 
 
 def train_BPE(input_path:str, vocab_size:int, special_tokens:List[str]) -> Tuple[Dict[int, bytes], List[Tuple[bytes, bytes]]]:
         regex:re.Pattern = get_regex_pattern("GPT4")
         pre_tokenized: List[str] = pre_tokenize(regex, input_path)
-        # with open(input_path, "r") as text:
-            # pre_tokenized = F.read().encode("utf-8")
+
         counts_and_locations: Dict[Tuple[int,int], list] = {}
         heap: List[Tuple[int, Tuple[int, int]]] = []
-
+        negatives: Set[Tuple[int, int]] = set()
         vocab: Dict[int, bytes]  = {i:bytes(special_tokens[i].encode("utf-8")) for i in range(len(special_tokens))}
 
         indices: List[List[int]] = []
@@ -88,30 +118,35 @@ def train_BPE(input_path:str, vocab_size:int, special_tokens:List[str]) -> Tuple
         for idx in range(num_merges):
             #most common pair maybe need to add ordering logic in case of ties
             pair: Tuple[int, int]  = (0, 0)
-            max_counts: int = 0
             max_counts, pair = heapq.heappop(heap)
 
-            ties: List[Tuple[str, Tuple[int, int]]] = [("".join([vocab[x].decode("utf-8", errors="replace") for x in pair]), pair)]
-            while heap[0][0] == max_counts:
-                next_pair: Tuple[int, int] = heapq.heappop(heap)[1]
-                ties.append(("".join([vocab[x].decode("utf-8") for x in next_pair]), next_pair))
+            while pair in negatives:
+                max_counts, pair = heapq.heappop(heap)
 
-            sorted_ties:List[Tuple[str, Tuple[int, int]]] = sorted(ties, reverse=True)
-            for i in range(len(sorted_ties)):     
-                if i == 0:
-                    pair = sorted_ties[i][1]
-                else:
-                    heapq.heappush(heap, (max_counts, sorted_ties[i][1]))
+            # ties: List[Tuple[int, int]] = [pair]
+            # while heap[0][0] == max_counts:
+            #     next_pair: Tuple[int, int] = heapq.heappop(heap)[1]
+            #     ties.append(next_pair)
 
-            new_index = start_index + i
+            # sorted_ties: List[Tuple[int, int]] = sorted(ties, reverse=True)
+            # for i in range(len(sorted_ties)):     
+            #     if i == 0:
+            #         pair = sorted_ties[i][1]
+            #     else:
+            #         heapq.heappush(heap, (max_counts, sorted_ties[i][1]))
+
+            new_index = start_index + idx
             merges.append((vocab[pair[0]], vocab[pair[1]]))
             vocab[new_index] = vocab[pair[0]] + vocab[pair[1]]
 
-            indices = merge(indices, pair, new_index)
+            indices, counts_and_locations, pairs_to_update_counts, negatives = merge(indices, pair, new_index, counts_and_locations, negatives)
 
-        save_merges_and_vocab(merges, vocab, prefix="taylorswift")
+            for key in pairs_to_update_counts:
+                heapq.heappush(heap, (-counts_and_locations[key][0], key))
+
+        save_merges_and_vocab(merges, vocab, prefix="test")
         
         return vocab, merges
 
-vocab, merges = train_BPE("minbpe/tests/taylorswift.txt", 512, [])
+vocab, merges = train_BPE("/home/dk/code/minbpe/tests/taylorswift.txt", 512, [])
 
