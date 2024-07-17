@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import os
 from typing import IO, BinaryIO, Iterable, Optional, Type
-from cs336_basics.BPE_tokenizer import BPE
-from cs336_basics.transformer_modules import RMSnorm, gelu, FF, softmax, Attention, Multi_Head_Attention, Transformer_block
-from cs336_basics.transformer import Transformer
+from modules.BPE_tokenizer import BPE
+from modules.transformer_modules import RMSnorm, gelu, FF, softmax, Attention, Multi_Head_Attention, Transformer_block
+from modules.transformer import Transformer
 
 
 import numpy.typing as npt

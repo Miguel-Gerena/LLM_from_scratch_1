@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 
-from cs336_basics.transformer_modules import RMSnorm, transformer_layers
+from modules.transformer_modules import RMSnorm, transformer_layers
 
 
 
