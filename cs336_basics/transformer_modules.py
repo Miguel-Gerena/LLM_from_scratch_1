@@ -135,7 +135,7 @@ class Transformer_block(nn.Module):
         return ff
 
 def transformer_layers(num_layers:int, d_model:int, num_heads:int, d_ff:int, attn_drop:float|None = None,  res_drop:float|None = None, pre_norm:bool=True):
-    return nn.Sequential(nn.ModuleList([Transformer_block(d_model, num_heads, d_ff, attn_drop, res_drop) for _ in range(num_layers)]))
+    return nn.Sequential(*[Transformer_block(d_model, num_heads, d_ff, attn_drop, res_drop) for _ in range(num_layers)])
 
 
     

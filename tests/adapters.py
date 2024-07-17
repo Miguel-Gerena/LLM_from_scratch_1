@@ -5,6 +5,7 @@ import os
 from typing import IO, BinaryIO, Iterable, Optional, Type
 from cs336_basics.BPE_tokenizer import BPE
 from cs336_basics.transformer_modules import RMSnorm, gelu, FF, softmax, Attention, Multi_Head_Attention, Transformer_block
+from cs336_basics.transformer import Transformer
 
 
 import numpy.typing as npt
@@ -311,7 +312,9 @@ def run_transformer_lm(
         FloatTensor of shape (batch size, sequence_length, vocab_size) with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
+    transformer = Transformer(context_length, vocab_size, num_layers, d_model, num_heads, d_ff, attn_pdrop, residual_pdrop)
+    transformer.set_weights_from_dict(weights)
+    return transformer(in_indices)
 
 
 def run_rmsnorm(
