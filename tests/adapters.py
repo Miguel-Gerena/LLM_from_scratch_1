@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from typing import IO, BinaryIO, Iterable, Optional, Type
 from cs336_basics.BPE_tokenizer import BPE
-from cs336_basics.transformer_modules import RMSnorm, Gelu, FF, softmax, Attention, Multi_Head_Attention
+from cs336_basics.transformer_modules import RMSnorm, gelu, FF, softmax, Attention, Multi_Head_Attention, Transformer_block
 
 
 import numpy.typing as npt
@@ -216,7 +216,9 @@ def run_transformer_block(
         FloatTensor of shape (batch_size, sequence_length, d_model) with the output of
         running the Transformer block on the input features.
     """
-    raise NotImplementedError
+    block = Transformer_block(d_model, num_heads, d_ff, attn_pdrop, residual_pdrop)
+    block.set_weights_from_dict(weights)
+    return block(in_features)
 
 
 def run_transformer_lm(
@@ -358,7 +360,6 @@ def run_gelu(in_features: torch.FloatTensor) -> torch.FloatTensor:
         FloatTensor of with the same shape as `in_features` with the output of applying
         GELU to each element.
     """
-    gelu = Gelu()
     return gelu(in_features)
 
 

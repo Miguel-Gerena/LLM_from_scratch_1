@@ -39,7 +39,32 @@ def test_multihead_self_attention():
         actual_output.detach().numpy(), expected_output.detach().numpy(), atol=1e-6
     )
 
-test_multihead_self_attention()
 
 
 
+
+def test_transformer_block():
+    torch.manual_seed(42)
+    reference_weights = torch.load(FIXTURES_PATH / "transformer_block_weights.pt")
+    in_features = torch.load(FIXTURES_PATH / "in_features.pt")
+    expected_output = torch.load(FIXTURES_PATH / "transformer_block_expected_output.pt")
+    d_model = 64
+    num_heads = 2
+    d_ff = d_model * 4
+    attn_pdrop = 0.0
+    residual_pdrop = 0.0
+
+    actual_output = run_transformer_block(
+        d_model=d_model,
+        num_heads=num_heads,
+        d_ff=d_ff,
+        attn_pdrop=attn_pdrop,
+        residual_pdrop=residual_pdrop,
+        weights=reference_weights,
+        in_features=in_features,
+    )
+    numpy.testing.assert_allclose(
+        actual_output.detach().numpy(), expected_output.detach().numpy(), atol=1e-6
+    )
+
+test_transformer_block()
