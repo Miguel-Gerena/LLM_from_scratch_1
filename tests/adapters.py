@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from typing import IO, BinaryIO, Iterable, Optional, Type
 from cs336_basics.BPE_tokenizer import BPE
-from cs336_basics.transformer_modules import RMSnorm, Gelu, FF, softmax, Attention
+from cs336_basics.transformer_modules import RMSnorm, Gelu, FF, softmax, Attention, Multi_Head_Attention
 
 
 import numpy.typing as npt
@@ -142,7 +142,9 @@ def run_multihead_self_attention(
         torch.FloatTensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    mha = Multi_Head_Attention(d_model, num_heads, attn_pdrop)
+    mha.set_weights_from_dict(weights)
+    return mha(in_features)
 
 
 def run_transformer_block(
