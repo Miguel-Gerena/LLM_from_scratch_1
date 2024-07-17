@@ -69,11 +69,8 @@ class Multi_Head_Attention(nn.Module):
     def __init__(self, d_model, num_heads, p_drop):
         super().__init__()
         self.p_drop = p_drop
-        self.Q = nn.Linear(d_model, d_model, bias=False)
-        self.K = nn.Linear(d_model, d_model, bias=False)
-        self.V = nn.Linear(d_model, d_model, bias=False)
         self.proj = nn.Linear(d_model, d_model, bias=False)
-        self.total = nn.Linear(d_model, 3*d_model, bias=False)
+        self.fused_qkv = nn.Linear(d_model, 3*d_model, bias=False)
 
         self.num_heads = num_heads
         self.d_model = d_model
@@ -91,12 +88,9 @@ class Multi_Head_Attention(nn.Module):
             V[head] = weights[f"v_heads.{head}.weight"]
 
         self.proj.weight.data[:] =  weights["output_proj.weight"]
-        self.Q.weight.data[:] = Q.view(self.d_model, self.d_model)
-        self.V.weight.data[:] = V.view(self.d_model, self.d_model)
-        self.K.weight.data[:] = K.view(self.d_model, self.d_model)
-        self.total.weight.data[0:self.d_model, :] =  Q.view(self.d_model, self.d_model)
-        self.total.weight.data[self.d_model:2*self.d_model, :] =  Q.view(self.d_model, self.d_model)
-        self.total.weight.data[2*self.d_model:3*self.d_model, :] =  Q.view(self.d_model, self.d_model)
+        self.fused_qkv.weight.data[0:self.d_model, :] =  Q.view(self.d_model, self.d_model)
+        self.fused_qkv.weight.data[self.d_model:2*self.d_model, :] =  K.view(self.d_model, self.d_model)
+        self.fused_qkv.weight.data[2*self.d_model:3*self.d_model, :] =  V.view(self.d_model, self.d_model)
 
 
     def forward(self, x):
@@ -104,12 +98,10 @@ class Multi_Head_Attention(nn.Module):
         target_seq_len = self.d_model
         num_head = self.num_heads
         head_dim = self.head_dim
-        print(self.Q.weight.data.shape, x.shape)
-
-        Q = self.Q(x).view(B, -1, num_head, head_dim).transpose(1, 2)
-        K = self.K(x).view(B, -1, num_head, head_dim).permute(0, 2, 1, 3)
-        V = self.V(x).view(B, -1, num_head, head_dim).transpose(1, 2)
-        torch.tensor_split(self.total(x), 3, -1)
+        Q, K, V = torch.tensor_split(self.fused_qkv(x), 3, -1)
+        Q = Q.view(B, source_seq_len, num_head, head_dim).transpose(1, 2)
+        K = K.view(B, source_seq_len, num_head, head_dim).permute(0, 2, 1, 3)
+        V = V.view(B, source_seq_len, num_head, head_dim).transpose(1, 2)
 
         mask = torch.triu(torch.ones((source_seq_len, source_seq_len), dtype=torch.bool, device=x.device), diagonal=1).to(x.device)
         output = self.attention_dot_prod( Q, K, V, mask)
