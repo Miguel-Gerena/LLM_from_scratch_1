@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import os
 from typing import IO, BinaryIO, Iterable, Optional, Type
-from cs336_basics.BPE_tokenizer import train_BPE
+from cs336_basics.BPE_tokenizer import BPE
+from cs336_basics.transformer_modules import RMSnorm, Gelu, FF, softmax, Attention
+
 
 import numpy.typing as npt
 import torch
@@ -44,7 +46,10 @@ def run_positionwise_feedforward(
     # You can also manually assign the weights
     # my_ffn.w1.weight.data = weights["w1.weight"]
     # my_ffn.w2.weight.data = weights["w2.weight"]
-    raise NotImplementedError
+    ff = FF(d_model, d_ff)
+    ff.ff1.weight.data = weights["w1.weight"]
+    ff.ff2.weight.data = weights["w2.weight"]
+    return ff(in_features)
 
 
 def run_scaled_dot_product_attention(
@@ -86,7 +91,8 @@ def run_scaled_dot_product_attention(
         with the output of running your scaled dot product attention
         implementation with the provided key, query, and value tensors.
     """
-    raise NotImplementedError
+    attention = Attention(pdrop)
+    return attention(Q, K, V, mask)
 
 
 def run_multihead_self_attention(
@@ -332,7 +338,10 @@ def run_rmsnorm(
         FloatTensor of with the same shape as `in_features` with the output of running
         RMSNorm of the `in_features`.
     """
-    raise NotImplementedError
+
+    rmsnorm = RMSnorm(d_model, eps)
+    rmsnorm.gi.data[:] = weights["weight"]
+    return rmsnorm(in_features) 
 
 
 def run_gelu(in_features: torch.FloatTensor) -> torch.FloatTensor:
@@ -347,7 +356,8 @@ def run_gelu(in_features: torch.FloatTensor) -> torch.FloatTensor:
         FloatTensor of with the same shape as `in_features` with the output of applying
         GELU to each element.
     """
-    raise NotImplementedError
+    gelu = Gelu()
+    return gelu(in_features)
 
 
 def run_get_batch(
@@ -391,7 +401,7 @@ def run_softmax(in_features: torch.FloatTensor, dim: int) -> torch.FloatTensor:
         FloatTensor of with the same shape as `in_features` with the output of
         softmax normalizing the specified `dim`.
     """
-    raise NotImplementedError
+    return softmax(in_features, dim)
 
 
 def run_cross_entropy(inputs: torch.FloatTensor, targets: torch.LongTensor):
@@ -570,4 +580,7 @@ def run_train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
-    return train_BPE(input_path, vocab_size, special_tokens)
+    bpe = BPE()
+    bpe.train(input_path, vocab_size, special_tokens, "GPT2")
+    return (bpe.vocab, bpe.merges)
+
