@@ -6,6 +6,8 @@ from typing import IO, BinaryIO, Iterable, Optional, Type
 from modules.BPE_tokenizer import BPE
 from modules.transformer_modules import RMSnorm, gelu, FF, softmax, Attention, Multi_Head_Attention, Transformer_block
 from modules.transformer import Transformer
+from modules.training_util import cosine_learning_warmup, clip_gradient
+from modules.data_loader import get_batch
 
 
 import numpy.typing as npt
@@ -390,7 +392,7 @@ def run_get_batch(
         is the sampled input sequences, and the second tuple item is the corresponding
         language modeling labels.
     """
-    raise NotImplementedError
+    return get_batch(dataset, batch_size, context_length, device)
 
 
 def run_softmax(in_features: torch.FloatTensor, dim: int) -> torch.FloatTensor:
@@ -440,8 +442,7 @@ def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm:
     Returns:
         None
     """
-    raise NotImplementedError
-
+    clip_gradient(parameters, max_l2_norm)
 
 def get_adamw_cls() -> Type[torch.optim.Optimizer]:
     """
@@ -480,7 +481,7 @@ def run_get_lr_cosine_schedule(
     Returns:
         Learning rate at the given iteration under the specified schedule.
     """
-    raise NotImplementedError
+    return cosine_learning_warmup(it, max_learning_rate, min_learning_rate, warmup_iters, cosine_cycle_iters)
 
 
 def run_save_checkpoint(
