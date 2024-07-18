@@ -138,5 +138,3 @@ def transformer_layers(num_layers:int, d_model:int, num_heads:int, d_ff:int, att
     return nn.Sequential(*[Transformer_block(d_model, num_heads, d_ff, attn_drop, res_drop) for _ in range(num_layers)])
 
 
-    
-    

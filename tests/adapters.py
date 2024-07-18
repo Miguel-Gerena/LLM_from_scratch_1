@@ -8,6 +8,7 @@ from modules.transformer_modules import RMSnorm, gelu, FF, softmax, Attention, M
 from modules.transformer import Transformer
 from modules.training_util import cosine_learning_warmup, clip_gradient
 from modules.data_loader import get_batch
+from modules.train import save_checkpoint, load_checkpoint
 
 
 import numpy.typing as npt
@@ -448,7 +449,7 @@ def get_adamw_cls() -> Type[torch.optim.Optimizer]:
     """
     Returns a torch.optim.Optimizer that implements AdamW.
     """
-    raise NotImplementedError
+    return torch.optim.AdamW
 
 
 def run_get_lr_cosine_schedule(
@@ -504,7 +505,7 @@ def run_save_checkpoint(
         out: str | os.PathLike | BinaryIO | IO[bytes]
             Path or file-like object to serialize the model, optimizer, and iteration to.
     """
-    raise NotImplementedError
+    save_checkpoint(model, out, iteration, optimizer)
 
 
 def run_load_checkpoint(
@@ -528,7 +529,7 @@ def run_load_checkpoint(
     Returns:
         int, the previously-serialized number of iterations.
     """
-    raise NotImplementedError
+    return load_checkpoint(model, src, optimizer)
 
 
 def get_tokenizer(

@@ -1,8 +1,9 @@
 import numpy as np
 import torch
 from typing import Tuple
+import numpy.typing as npt
 
-def get_batch(x:np.array, batch_size:int, context_length:int, device:str="cpu") -> Tuple[torch.tensor, torch.tensor]:
+def get_batch(x:npt.NDArray, batch_size:int, context_length:int, device:str="cpu") -> Tuple[torch.tensor, torch.tensor]:
     length_dataset = len(x)
     max_index = length_dataset - context_length
     indices = np.random.randint(0, max_index, batch_size)
