@@ -36,12 +36,3 @@ class Transformer(nn.Module):
         embed = self.embed_drop(self.embed_layer(x) + self.pos_embeding[None, :x.shape[-1], :])
         x = self.transformer_blocks(embed)
         return self.mlp(self.final_norm(x))
-
-
-model = Transformer(256, 10000, 4, 512, 16, 2048, 0, 0)
-model.to("cuda")
-trainable = sum([numel(param) for param in list(model.parameters()) if param.requires_grad])
-total = sum([numel(param) for param in list(model.parameters()) ])
-
-print("hi")
-    
