@@ -11,7 +11,7 @@ class BPETokenizerParams:
     vocab: Dict[int, bytes]            
     merges: Dict[Tuple[int, int], int]  
 
-def gpt2_bytes_to_unicode(offset:int) -> dict[int, str]:
+def gpt2_bytes_to_unicode(offset:int) -> dict[int, bytes]:
     """
     Returns a mapping between every possible byte (an integer from 0 to 255) to a
     printable unicode string character representation. This function is taken
@@ -33,7 +33,7 @@ def gpt2_bytes_to_unicode(offset:int) -> dict[int, str]:
             bs.append(b)
             cs.append(2**8 + n)
             n += 1
-    characters = [chr(n) for n in cs]
+    characters = [chr(n).encode("utf-8") for n in cs]
     d = dict(zip(bs, characters))
     return d
 
@@ -75,11 +75,11 @@ class BPE():
     def save_merges_and_vocab(self, prefix="") -> None:
         with open(f"{prefix}_merges.txt", "w") as f:
             for key, val in self.merges:
-                f.write(f"({key} {val})\n")
+                f.write(f"{key}:{val}\n")
         
         with open(f"{prefix}_vocab.txt", "w") as f:
             for key, val in self.vocab.items():
-                f.write(f"({key}:{val})\n")
+                f.write(f"{key}:{val}\n")
     
     def _merge(self, indices: List[List[int]], pair: Tuple[(int, int)], new_index: int, counts_and_locations: Dict[Tuple[int, int], list]) -> Tuple[List[List[int]],  Dict[Tuple[int, int], list],  List[Tuple[int, int]]]:
         locations_to_replace = counts_and_locations.pop(pair)[1]  # get only the locations, the counts will not matter anymore since we are merging
@@ -137,7 +137,7 @@ class BPE():
         return indices, counts_and_locations, pairs_to_update_counts
     
     
-    def train(self, input_path:str | os.PathLike, vocab_size:int, special_tokens:List[str], regex_pattern:str="GPT4", debug:bool=False, save_pretokenized:bool = False) -> None:
+    def train(self, input_path:str | os.PathLike, vocab_size:int, special_tokens:List[str], regex_pattern:str="GPT4", debug:bool=False, useControl_characters:bool = False, useHeap: bool = False) -> None:
         regex:re.Pattern = self._get_regex_pattern(regex_pattern)
         # pre_tokenized: List[str] = self._pre_tokenize(regex, input_path)
         # if save_pretokenized:
@@ -146,15 +146,17 @@ class BPE():
         
 
         counts_and_locations: Dict[Tuple[int, int], list] = {}
-        heap: List[Tuple[int, Tuple[int, int]]] = []
         indices: List[List[int]] = []
-
-        for x in range(256):
-            self.vocab[x] = bytes([x])
-
+        
         for i in range(len(special_tokens)):
             self.special_tokens.add(special_tokens[i])
             self.vocab[len(self.vocab)] = bytes(special_tokens[i].encode("utf-8"))
+
+        if useControl_characters:
+            for x in range(256):
+                self.vocab[x + len(special_tokens)] = bytes([x])
+        else:
+            self.vocab.update(gpt2_bytes_to_unicode(len(special_tokens)))
 
         idx = 0
         for sentence in self._pre_tokenize(regex, input_path):
@@ -166,37 +168,58 @@ class BPE():
 
         print("tokenized")
         
-                
-        for key, value in counts_and_locations.items():
-            heapq.heappush(heap, (-value[0], key))
+        if useHeap:
+            heap: List[Tuple[int, Tuple[int, int]]] = []
+            for key, value in counts_and_locations.items():
+                heapq.heappush(heap, (-value[0], key))
 
         start_index = len(self.vocab)
         num_merges = vocab_size - start_index
         for idx in range(num_merges):
             pair: Tuple[int, int]  = (0, 0)
-            max_counts, pair = heapq.heappop(heap)
-
-            # if counts in heap are stale update count for the current pair and retry heap
-            while -max_counts != counts_and_locations[pair][0]:
-                if counts_and_locations[pair][0] <= 0:
-                    max_counts, pair = heapq.heappop(heap)
-                else:
-                    max_counts, pair = heapq.heappushpop(heap, (-counts_and_locations[pair][0], pair))
-
-            ties = {pair:max_counts}
-            while max_counts == heap[0][0]:
+            if useHeap:
                 max_counts, pair = heapq.heappop(heap)
-                ties[pair] = max_counts
+            else:
+                pair = max(counts_and_locations, key=lambda x: counts_and_locations[x][0])
+                max_counts, locations = counts_and_locations.pop(pair)
+
+            if useHeap:
+                # if counts in heap are stale update count for the current pair and retry heap
+                while -max_counts != counts_and_locations[pair][0]:
+                    if counts_and_locations[pair][0] <= 0:
+                        max_counts, pair = heapq.heappop(heap)
+                    else:
+                        max_counts, pair = heapq.heappushpop(heap, (-counts_and_locations[pair][0], pair))
+
+                ties = {pair:max_counts}
+                while max_counts == heap[0][0]:
+                    max_counts, pair = heapq.heappop(heap)
+                    ties[pair] = max_counts
+            else:
+                ties = {pair:[max_counts, locations]}
+                while next_pair := max(counts_and_locations, key=lambda x: counts_and_locations[x][0]):
+                    if counts_and_locations[next_pair][0] != max_counts:
+                        break
+                    pair = next_pair
+                    max_counts, locations = counts_and_locations.pop(pair)
+                    ties[pair] = [max_counts, locations]
+
+            if not useHeap:
+                for key, value in ties.items():
+                    counts_and_locations[key] = value
 
             if len(ties) > 1:
                 sorted_ties = sorted([((self.vocab[char[0]] + self.vocab[char[1]]).decode("utf-8"), char, value) for char, value in ties.items()])
                 if debug:
                     assert [p[0] for p in sorted_ties] == sorted([p[0] for p in ties]), f"sorted ties aren't sorted correctly"
                 pair = sorted_ties[0][1]
-                for _, pair_to_heap, counts in sorted_ties:
-                    if pair != pair_to_heap:
-                        heapq.heappush(heap, (counts, pair_to_heap))
+                if useHeap:
+                    for _, pair_to_heap, counts in sorted_ties:
+                        if pair != pair_to_heap:
+                            heapq.heappush(heap, (counts, pair_to_heap))
                 del sorted_ties, ties
+            
+            
 
             new_index = start_index + idx
             self.merges.append((self.vocab[pair[0]], self.vocab[pair[1]]))
@@ -207,8 +230,9 @@ class BPE():
 
             indices, counts_and_locations, pairs_to_update_counts = self._merge(indices, pair, new_index, counts_and_locations)
 
-            for key in pairs_to_update_counts:
-                heapq.heappush(heap, (-counts_and_locations[key][0], key))
+            if useHeap:
+                for key in pairs_to_update_counts:
+                    heapq.heappush(heap, (-counts_and_locations[key][0], key))
     
     
     def decode(self, indices):
@@ -231,11 +255,11 @@ class BPE():
         return b"".join(sentence).decode("utf-8", errors="replace")
 
 
-# # vocab, merges = train_BPE("/home/dk/code/minbpe/tests/taylorswift.txt", 512, [])
+# vocab, merges = train_BPE("/home/dk/code/minbpe/tests/taylorswift.txt", 512, [])
 # t0 = time.time()
-# bpe = BPE()
-# bpe.train("data/TinyStoriesV2-GPT4-train.txt", 10000, ["<|endoftext|>"], "GPT2")
-# bpe.save_merges_and_vocab("tiny_stories")
+bpe = BPE()
+bpe.train("tests/fixtures/corpus.en", 500, ["<|endoftext|>"], "GPT2")
+bpe.save_merges_and_vocab("corpuse_no_heap2")
 # t1 = time.time()
 # print(f"Training took {t1 - t0:.2f} seconds")
 
