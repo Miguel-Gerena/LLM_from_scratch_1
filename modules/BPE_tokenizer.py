@@ -4,7 +4,9 @@ from typing import List,Tuple, Dict, DefaultDict, Deque, Set, OrderedDict as OD
 from collections import defaultdict, OrderedDict, deque
 import heapq
 import time
+import resource
 import os
+import pickle
 
 @dataclass(frozen=True)
 class BPETokenizerParams:
@@ -45,7 +47,7 @@ def gpt2_bytes_to_unicode(offset:int) -> dict[int, bytes]:
 
 class BPE():
     def __init__(self) -> None:
-        self.params = BPETokenizerParamsBytes({}, [])
+        self.params = BPETokenizerParams({}, {})
         self.special_tokens: Set[str] = set()
 
     def _get_regex_pattern(self, pattern:str) -> re.Pattern[str]: 
@@ -76,7 +78,7 @@ class BPE():
             counts_and_locations[pair][1][index] += 1
         return counts_and_locations
     
-    def save_merges_and_vocab(self, prefix="") -> None:
+    def save_merges_and_vocab_to_txt(self, prefix="") -> None:
         with open(f"{prefix}_merges.txt", "w") as f:
             for key, val in self.params.merges:
                 f.write(f"{key}:{val}\n")
@@ -84,6 +86,19 @@ class BPE():
         with open(f"{prefix}_vocab.txt", "w") as f:
             for key, val in self.params.vocab.items():
                 f.write(f"{key}:{val}\n")
+    
+    def serialize_merges_and_vocab(self, prefix="") -> None:
+        with open(prefix + "_merges.pkl", "wb") as F:
+            pickle.dump(self.params.merges, F)
+        with open(prefix + "_vocab.pkl", "wb") as F:
+            pickle.dump(self.params.vocab, F)
+    
+    def load_serialized_merges_and_vocab(self, prefix="") -> None:
+        with open(prefix + "_merges.pkl", "rb") as F:
+            merges = pickle.load(F)
+        with open(prefix + "_vocab.pkl", "rb") as F:
+            vocab = pickle.load(F)
+        self.params = BPETokenizerParams(vocab, merges)
     
     def _merge(self, indices: List[List[int]], pair: Tuple[(int, int)], new_index: int, counts_and_locations: Dict[Tuple[int, int], list]) -> Tuple[List[List[int]],  Dict[Tuple[int, int], list],  List[Tuple[int, int]]]:
         locations_to_replace = counts_and_locations.pop(pair)[1]  # get only the locations, the counts will not matter anymore since we are merging
@@ -142,13 +157,7 @@ class BPE():
     
     
     def train(self, input_path:str | os.PathLike, vocab_size:int, special_tokens:List[str], regex_pattern:str="GPT4", debug:bool=False, useControl_characters:bool = False, useHeap: bool = False) -> None:
-        regex:re.Pattern = self._get_regex_pattern(regex_pattern)
-        # pre_tokenized: List[str] = self._pre_tokenize(regex, input_path)
-        # if save_pretokenized:
-        #     with open("pretokenized.txt", "w") as F:
-        #         F.write(f"{pre_tokenized}")
-        
-
+        regex:re.Pattern = self._get_regex_pattern(regex_pattern)      
         counts_and_locations: Dict[Tuple[int, int], list] = {}
         indices: List[List[int]] = []
         
@@ -221,12 +230,10 @@ class BPE():
                     for _, pair_to_heap, counts in sorted_ties:
                         if pair != pair_to_heap:
                             heapq.heappush(heap, (counts, pair_to_heap))
-                del sorted_ties, ties
-            
-            
+                del sorted_ties, ties       
 
             new_index = start_index + idx
-            self.params.merges.append((self.params.vocab[pair[0]], self.params.vocab[pair[1]]))
+            self.params.merges[(pair[0], pair[1])] = new_index
             self.params.vocab[new_index] = self.params.vocab[pair[0]] + self.params.vocab[pair[1]]
 
             if debug:
@@ -260,11 +267,20 @@ class BPE():
 
 
 # vocab, merges = train_BPE("/home/dk/code/minbpe/tests/taylorswift.txt", 512, [])
-# t0 = time.time()
-# bpe = BPE()
-# bpe.train("tests/fixtures/corpus.en", 500, ["<|endoftext|>"], "GPT2")
-# bpe.save_merges_and_vocab("corpuse_no_heap2")
-# t1 = time.time()
-# print(f"Training took {t1 - t0:.2f} seconds")
+t0 = time.time()
+bpe = BPE()
+bpe.train("data/TinyStoriesV2-GPT4-train.txt", 10000, ["<|endoftext|>"], "GPT2")
+t1 = time.time()
+print(f"Training took {t1 - t0:.2f} seconds")
+bpe.serialize_merges_and_vocab("tinyStories_train")
+print(f"memory usage: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024**3} Gb")
+
+t0 = time.time()
+bpe = BPE()
+bpe.train("data/TinyStoriesV2-GPT4-valid.txt", 10000, ["<|endoftext|>"], "GPT2")
+t1 = time.time()
+print(f"Training took {t1 - t0:.2f} seconds")
+bpe.serialize_merges_and_vocab("tinyStories_val")
+print(f"memory usage: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024**3} Gb")
 
 
