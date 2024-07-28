@@ -9,7 +9,12 @@ import os
 @dataclass(frozen=True)
 class BPETokenizerParams:
     vocab: Dict[int, bytes]            
-    merges: Dict[Tuple[int, int], int]  
+    merges: Dict[Tuple[int, int], int] 
+
+@dataclass(frozen=True)
+class BPETokenizerParamsBytes:
+    vocab: Dict[int, bytes]            
+    merges: List[Tuple[bytes, bytes]] 
 
 def gpt2_bytes_to_unicode(offset:int) -> dict[int, bytes]:
     """
@@ -40,8 +45,7 @@ def gpt2_bytes_to_unicode(offset:int) -> dict[int, bytes]:
 
 class BPE():
     def __init__(self) -> None:
-        self.merges: List[Tuple[bytes, bytes]] = []
-        self.vocab: Dict[int, bytes]  = {}
+        self.params = BPETokenizerParamsBytes({}, [])
         self.special_tokens: Set[str] = set()
 
     def _get_regex_pattern(self, pattern:str) -> re.Pattern[str]: 
@@ -74,11 +78,11 @@ class BPE():
     
     def save_merges_and_vocab(self, prefix="") -> None:
         with open(f"{prefix}_merges.txt", "w") as f:
-            for key, val in self.merges:
+            for key, val in self.params.merges:
                 f.write(f"{key}:{val}\n")
         
         with open(f"{prefix}_vocab.txt", "w") as f:
-            for key, val in self.vocab.items():
+            for key, val in self.params.vocab.items():
                 f.write(f"{key}:{val}\n")
     
     def _merge(self, indices: List[List[int]], pair: Tuple[(int, int)], new_index: int, counts_and_locations: Dict[Tuple[int, int], list]) -> Tuple[List[List[int]],  Dict[Tuple[int, int], list],  List[Tuple[int, int]]]:
@@ -150,13 +154,13 @@ class BPE():
         
         for i in range(len(special_tokens)):
             self.special_tokens.add(special_tokens[i])
-            self.vocab[len(self.vocab)] = bytes(special_tokens[i].encode("utf-8"))
+            self.params.vocab[len(self.params.vocab)] = bytes(special_tokens[i].encode("utf-8"))
 
         if useControl_characters:
             for x in range(256):
-                self.vocab[x + len(special_tokens)] = bytes([x])
+                self.params.vocab[x + len(special_tokens)] = bytes([x])
         else:
-            self.vocab.update(gpt2_bytes_to_unicode(len(special_tokens)))
+            self.params.vocab.update(gpt2_bytes_to_unicode(len(special_tokens)))
 
         idx = 0
         for sentence in self._pre_tokenize(regex, input_path):
@@ -173,7 +177,7 @@ class BPE():
             for key, value in counts_and_locations.items():
                 heapq.heappush(heap, (-value[0], key))
 
-        start_index = len(self.vocab)
+        start_index = len(self.params.vocab)
         num_merges = vocab_size - start_index
         for idx in range(num_merges):
             pair: Tuple[int, int]  = (0, 0)
@@ -209,7 +213,7 @@ class BPE():
                     counts_and_locations[key] = value
 
             if len(ties) > 1:
-                sorted_ties = sorted([((self.vocab[char[0]] + self.vocab[char[1]]).decode("utf-8"), char, value) for char, value in ties.items()])
+                sorted_ties = sorted([((self.params.vocab[char[0]] + self.params.vocab[char[1]]).decode("utf-8"), char, value) for char, value in ties.items()])
                 if debug:
                     assert [p[0] for p in sorted_ties] == sorted([p[0] for p in ties]), f"sorted ties aren't sorted correctly"
                 pair = sorted_ties[0][1]
@@ -222,11 +226,11 @@ class BPE():
             
 
             new_index = start_index + idx
-            self.merges.append((self.vocab[pair[0]], self.vocab[pair[1]]))
-            self.vocab[new_index] = self.vocab[pair[0]] + self.vocab[pair[1]]
+            self.params.merges.append((self.params.vocab[pair[0]], self.params.vocab[pair[1]]))
+            self.params.vocab[new_index] = self.params.vocab[pair[0]] + self.params.vocab[pair[1]]
 
             if debug:
-                print(f"merge {idx+1}/{num_merges}: {pair} -> {new_index} ({self.vocab[new_index]}) had {-max_counts} occurrences")
+                print(f"merge {idx+1}/{num_merges}: {pair} -> {new_index} ({self.params.vocab[new_index]}) had {-max_counts} occurrences")
 
             indices, counts_and_locations, pairs_to_update_counts = self._merge(indices, pair, new_index, counts_and_locations)
 
@@ -238,8 +242,8 @@ class BPE():
     def decode(self, indices):
         sentence = []
         for idx in indices:
-            if idx in self.vocab:
-                sentence.append[self.vocab[idx]]
+            if idx in self.params.vocab:
+                sentence.append[self.params.vocab[idx]]
             else:
                 raise ValueError(f"Invalid token id: {idx} resulting in unknown token")
         return b"".join(sentence).decode("utf-8", errors="replace")
@@ -248,8 +252,8 @@ class BPE():
     def encode(self, indices):
         sentence = []
         for idx in indices:
-            if idx in self.vocab:
-                sentence.append[self.vocab[idx]]
+            if idx in self.params.vocab:
+                sentence.append[self.params.vocab[idx]]
             else:
                 raise ValueError(f"Invalid token id: {idx} resulting in unknown token")
         return b"".join(sentence).decode("utf-8", errors="replace")
@@ -257,9 +261,9 @@ class BPE():
 
 # vocab, merges = train_BPE("/home/dk/code/minbpe/tests/taylorswift.txt", 512, [])
 # t0 = time.time()
-bpe = BPE()
-bpe.train("tests/fixtures/corpus.en", 500, ["<|endoftext|>"], "GPT2")
-bpe.save_merges_and_vocab("corpuse_no_heap2")
+# bpe = BPE()
+# bpe.train("tests/fixtures/corpus.en", 500, ["<|endoftext|>"], "GPT2")
+# bpe.save_merges_and_vocab("corpuse_no_heap2")
 # t1 = time.time()
 # print(f"Training took {t1 - t0:.2f} seconds")
 

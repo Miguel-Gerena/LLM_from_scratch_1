@@ -590,5 +590,5 @@ def run_train_bpe(
     """
     bpe = BPE()
     bpe.train(input_path, vocab_size, special_tokens, "GPT2")
-    return (bpe.vocab, bpe.merges)
+    return (bpe.params.vocab, bpe.params.merges)
 
