@@ -2,13 +2,13 @@ from math import cos, pi
 import torch
 from typing import Iterable
 
-def cosine_learning_warmup(t:int, alpha_max:float, alpha_min:float, t_w:int, t_c:int) -> float:
-    if t < t_w:
-        alpha = t/t_w * alpha_max
-    elif t_w <= t <= t_c:
-        alpha = alpha_min + 0.5 * ( 1 + cos((t-t_w)/(t_c-t_w)*pi)) * (alpha_max - alpha_min)
+def cosine_learning_warmup(time:int, alpha_max:float, alpha_min:float, time_warm:int, time_anneal:int) -> float:
+    if time < time_warm:
+        alpha = time/time_warm * alpha_max
+    elif time_warm <= time <= time_anneal:
+        alpha = alpha_min + 0.5 * ( 1 + cos((time-time_warm)/(time_anneal-time_warm)*pi)) * (alpha_max - alpha_min)
     else:
-        assert t > t_c, f"cosine learning post annealing condition not correct t:{t} tc:{t_c}"
+        assert time > time_anneal, f"cosine learning post annealing condition not correct t:{time} tc:{time_anneal}"
         alpha = alpha_min
     return alpha
 

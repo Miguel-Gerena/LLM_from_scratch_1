@@ -8,6 +8,7 @@ import resource
 import os
 import pickle
 
+
 @dataclass(frozen=True)
 class BPETokenizerParams:
     vocab: Dict[int, bytes]            
@@ -267,6 +268,12 @@ class BPE():
 
 
 # vocab, merges = train_BPE("/home/dk/code/minbpe/tests/taylorswift.txt", 512, [])
+
+with open(r"data/TinyStoriesV2-GPT4-train.txt", 'r') as fp:
+    lines = len(fp.readlines())
+    print('Total Number of lines:', lines)
+
+
 t0 = time.time()
 bpe = BPE()
 bpe.train("data/TinyStoriesV2-GPT4-train.txt", 10000, ["<|endoftext|>"], "GPT2")

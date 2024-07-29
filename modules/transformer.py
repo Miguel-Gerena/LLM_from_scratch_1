@@ -1,7 +1,8 @@
 import torch
-from torch import nn, numel
+from torch import nn
+from typing import List
 
-from modules.transformer_modules import RMSnorm, transformer_layers
+from modules.transformer_modules import RMSnorm, transformer_layers, softmax
 
 
 
@@ -32,7 +33,25 @@ class Transformer(nn.Module):
             block.set_weights_from_dict(new_weights)
         self.final_norm.ln.data[:] = weights["ln_final.weight"]
 
-    def forward(self, x):
+    def forward(self, x: torch.tensor) -> torch.tensor:
         embed = self.embed_drop(self.embed_layer(x) + self.pos_embeding[None, :x.shape[-1], :])
         x = self.transformer_blocks(embed)
         return self.mlp(self.final_norm(x))
+
+    def generate(self, input_ids: torch.Tensor, stop_tokens: List[int], max_tokens:int, temperature:float, top_p:float = 1) -> List[int]:
+        sampled_tokens: List[int] = []
+        self.eval()
+        while True:
+            with torch.inference_mode():
+                generated = self.forward(input_ids)
+            probs = softmax(generated/temperature, dim=-1)
+
+            highest_prob = torch.argmax(probs, dim=-1)[:,-1]
+            if highest_prob.item() in stop_tokens or max_tokens == 0:
+                if highest_prob.item() in stop_tokens:
+                    sampled_tokens.append(highest_prob.item())
+                return sampled_tokens
+
+            sampled_tokens.append(highest_prob.item())
+            max_tokens -= 1
+            input_ids = highest_prob.unsqueeze(0).to(input_ids.device)

@@ -30,7 +30,7 @@ class FF(nn.Module):
         a = gelu(self.ff1(x))
         return  self.ff2(a)
     
-def softmax(x:torch.FloatTensor, dim:int):
+def softmax(x:torch.FloatTensor, dim:int) -> torch.tensor:
     max_x = torch.max(x)
     x -= max_x
     max_sum = torch.sum(torch.exp(x), dim=dim, keepdim=True)
