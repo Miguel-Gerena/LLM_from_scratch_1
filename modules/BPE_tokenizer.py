@@ -1,3 +1,4 @@
+from copy import deepcopy
 import regex as re
 from dataclasses import dataclass
 from typing import List,Tuple, Dict, DefaultDict, Deque, Set, OrderedDict as OD
@@ -86,6 +87,33 @@ def generate_pairs_and_location_from_buckets(sentence_bucket:List[str]) -> Tuple
             counts_and_locations = build_pairs_and_locations(word_ints, counts_and_locations, idx)
             idx += 1
     return indices, counts_and_locations, idx
+
+def get_pairs_and_locations_from_buckets(sentence_buckets:List[List[str]], num_procs:int=6) ->Tuple[List[List[int]], Dict[Tuple[int, int], list]]:
+    ans = joblib.Parallel(n_jobs=num_procs, backend="loky")(
+    joblib.delayed(generate_pairs_and_location_from_buckets)(sentence_bucket)
+    for sentence_bucket in tqdm(sentence_buckets, total=len(sentence_buckets)))
+
+    final_indices:list[List[int]] = []
+    final_counts_locations = {}
+    last_offset:int = 0
+    for indices, counts_and_location_shard, offset in tqdm(ans, desc="reducing parallel output"):
+        assert offset == len(indices), f"offset: {offset} is wrong. len: {len(indices)}"
+        if not final_indices:
+            final_indices = deepcopy(indices)
+            final_counts_locations = deepcopy(counts_and_location_shard)
+            last_offset = offset
+            continue
+
+        final_indices.extend([index + last_offset for index in indices])
+        
+        for pair, (counts, locations) in counts_and_location_shard.items():
+            final_counts_locations[pair] = final_counts_locations.get(pair, [0, defaultdict(int)])
+            final_counts_locations[pair][0] += counts
+            for index in locations:
+                final_counts_locations[pair][1].append(index + last_offset)
+        last_offset = offset
+    return final_indices, final_counts_locations
+    
 
 # TODO: have a final function that consolidate the generate_pairs_And location result
 # TODO: by iterating through the dictionaries updating the values to a master one, offseting the indexes by idx and concatenating the indices in the correct order
