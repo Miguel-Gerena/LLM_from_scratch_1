@@ -7,6 +7,8 @@ import time
 import resource
 import os
 import pickle
+import joblib
+from tqdm import tqdm
 
 
 @dataclass(frozen=True)
@@ -45,40 +47,67 @@ def gpt2_bytes_to_unicode(offset:int) -> dict[int, bytes]:
     d = dict(zip(bs, characters))
     return d
 
+def get_regex_pattern(pattern:str) -> re.Pattern[str]: 
+    reg: str = ""
+    if pattern == "GPT2":
+        reg = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+    elif pattern == "GPT4":
+        reg = r"""'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?+\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]++[\r\n]*|\s*[\r\n]|\s+(?!\S)|\s+"""
+    elif pattern == "BPE_Example":
+        reg = r"""\S"""
+    else:
+        reg = fr"""{pattern}"""
+    return re.compile(reg)
+
+def generate_sentence_buckets(filename:str, EOF_token:str='<|endoftext|>', num_proc:int=6) -> List[str]:
+    sentence_buckets = ["" for _ in range(num_proc)]
+    i = 0
+    with open(filename, "r") as F:
+        for line in F:
+            sentence_buckets[i%num_proc] += line
+            if line == EOF_token or line == EOF_token+"\n":
+                i += 1
+    return sentence_buckets
+
+def pre_tokenize_buckets(pattern:re.Pattern, sentences_buckets:List[str], num_procs:int=6) -> List[str]:
+    ans = joblib.Parallel(n_jobs=num_procs, backend="loky")(
+    joblib.delayed(re.findall)(pattern, sentence_bucket)
+    for sentence_bucket in tqdm(sentences_buckets, total=len(sentences_buckets)))
+    return ans
+
+def generate_pairs_and_location_from_buckets(sentence_bucket:List[str]) -> Tuple[List[List[int]], Dict[Tuple[int, int], list], int]:
+    indices: List[List[int]] = []
+    counts_and_locations: Dict[Tuple[int, int], list] = {}
+    idx:int=0
+    for sentence in sentence_bucket:
+        for word in sentence:
+            word_ints: List[int] = list(word.encode("utf-8"))
+            indices.append(word_ints)
+            counts_and_locations = build_pairs_and_locations(word_ints, counts_and_locations, idx)
+            idx += 1
+    return indices, counts_and_locations, idx
+
+# TODO: have a final function that consolidate the generate_pairs_And location result
+# TODO: by iterating through the dictionaries updating the values to a master one, offseting the indexes by idx and concatenating the indices in the correct order
+# TODO: master dict master indices, next indicies concate and offset by idx, iterate through next dict and update counts and indices by offseting by idx
+    
+def build_pairs_and_locations(indices: List[int], counts_and_locations: Dict[Tuple[int, int], list], index: int) -> Dict[Tuple[int, int], list]:
+    for pair in zip(indices, indices[1:]):
+        counts_and_locations[pair] = counts_and_locations.get(pair, [0, defaultdict(int)])
+        counts_and_locations[pair][0] += 1
+        counts_and_locations[pair][1][index] += 1
+    return counts_and_locations
 
 class BPE():
     def __init__(self) -> None:
         self.params = BPETokenizerParams({}, {})
         self.special_tokens: Set[str] = set()
 
-    def _get_regex_pattern(self, pattern:str) -> re.Pattern[str]: 
-        reg: str = ""
-        if pattern == "GPT2":
-            reg = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
-        elif pattern == "GPT4":
-            reg = r"""'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?+\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]++[\r\n]*|\s*[\r\n]|\s+(?!\S)|\s+"""
-        elif pattern == "BPE_Example":
-            reg = r"""\S"""
-        else:
-            reg = fr"""{pattern}"""
-        return re.compile(reg)
-
     def _pre_tokenize(self, pattern:re.Pattern , filename:str, endLine:bool=True) -> List[str]:
         with open(filename, "r") as F:
             for line in F:
-            # if not endLine:  # Make sure to keep each word separate. Do not concat string
-            #     pre_tokenized_output:List[str] = re.findall(pattern, "".join(line + " " for line in F.read().splitlines()))
-            # else:
-            #     pre_tokenized_output:List[str] = re.findall(pattern, F.read())
                 yield re.findall(pattern, line)
-    
-    def _build_pairs_and_locations(self, indices: List[int], counts_and_locations: Dict[Tuple[int, int], list], index: int) -> Dict[Tuple[int, int], list]:
-        for pair in zip(indices, indices[1:]):
-            counts_and_locations[pair] = counts_and_locations.get(pair, [0, defaultdict(int)])
-            counts_and_locations[pair][0] += 1
-            counts_and_locations[pair][1][index] += 1
-        return counts_and_locations
-    
+
     def save_merges_and_vocab_to_txt(self, prefix="") -> None:
         with open(f"{prefix}_merges.txt", "w") as f:
             for key, val in self.params.merges:
@@ -158,7 +187,7 @@ class BPE():
     
     
     def train(self, input_path:str | os.PathLike, vocab_size:int, special_tokens:List[str], regex_pattern:str="GPT4", debug:bool=False, useControl_characters:bool = False, useHeap: bool = False) -> None:
-        regex:re.Pattern = self._get_regex_pattern(regex_pattern)      
+        regex:re.Pattern = get_regex_pattern(regex_pattern)      
         counts_and_locations: Dict[Tuple[int, int], list] = {}
         indices: List[List[int]] = []
         
@@ -177,7 +206,7 @@ class BPE():
             for word in sentence:
                 word_ints: List[int] = list(word.encode("utf-8"))
                 indices.append(word_ints)
-                counts_and_locations = self._build_pairs_and_locations(word_ints, counts_and_locations, idx)
+                counts_and_locations = build_pairs_and_locations(word_ints, counts_and_locations, idx)
                 idx += 1
 
         print("tokenized")
@@ -269,18 +298,18 @@ class BPE():
 
 # vocab, merges = train_BPE("/home/dk/code/minbpe/tests/taylorswift.txt", 512, [])
 
-with open(r"data/TinyStoriesV2-GPT4-train.txt", 'r') as fp:
-    lines = len(fp.readlines())
-    print('Total Number of lines:', lines)
+# with open(r"data/TinyStoriesV2-GPT4-train.txt", 'r') as fp:
+#     lines = len(fp.readlines())
+#     print('Total Number of lines:', lines)
 
 
-t0 = time.time()
-bpe = BPE()
-bpe.train("data/TinyStoriesV2-GPT4-train.txt", 10000, ["<|endoftext|>"], "GPT2")
-t1 = time.time()
-print(f"Training took {t1 - t0:.2f} seconds")
-bpe.serialize_merges_and_vocab("tinyStories_train")
-print(f"memory usage: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024**3} Gb")
+# t0 = time.time()
+# bpe = BPE()
+# bpe.train("data/TinyStoriesV2-GPT4-train.txt", 10000, ["<|endoftext|>"], "GPT2")
+# t1 = time.time()
+# print(f"Training took {t1 - t0:.2f} seconds")
+# bpe.serialize_merges_and_vocab("tinyStories_train")
+# print(f"memory usage: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024**3} Gb")
 
 t0 = time.time()
 bpe = BPE()
