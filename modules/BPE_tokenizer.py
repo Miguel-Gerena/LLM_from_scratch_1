@@ -60,20 +60,25 @@ def get_regex_pattern(pattern:str) -> re.Pattern[str]:
         reg = fr"""{pattern}"""
     return re.compile(reg)
 
+def pre_tokenize(pattern:re.Pattern , filename:str) -> List[str]:
+    with open(filename, "r") as F:
+        for line in F:
+            yield re.findall(pattern, line)
+
 def generate_sentence_buckets(filename:str, EOF_token:str='<|endoftext|>', num_proc:int=6) -> List[str]:
     sentence_buckets = ["" for _ in range(num_proc)]
     i = 0
     with open(filename, "r") as F:
         for line in F:
             sentence_buckets[i%num_proc] += line
-            if line == EOF_token or line == EOF_token+"\n":
+            if line[-1] == EOF_token or line == EOF_token or line == EOF_token+"\n":
                 i += 1
     return sentence_buckets
 
 def pre_tokenize_buckets(pattern:re.Pattern, sentences_buckets:List[str], num_procs:int=6) -> List[str]:
     ans = joblib.Parallel(n_jobs=num_procs, backend="loky")(
     joblib.delayed(re.findall)(pattern, sentence_bucket)
-    for sentence_bucket in tqdm(sentences_buckets, total=len(sentences_buckets)))
+    for sentence_bucket in tqdm(sentences_buckets, total=len(sentences_buckets), desc="Tokenizing Buckets"))
     return ans
 
 def generate_pairs_and_location_from_buckets(sentence_bucket:List[str]) -> Tuple[List[List[int]], Dict[Tuple[int, int], list], int]:
@@ -88,7 +93,7 @@ def generate_pairs_and_location_from_buckets(sentence_bucket:List[str]) -> Tuple
             idx += 1
     return indices, counts_and_locations, idx
 
-def get_pairs_and_locations_from_buckets(sentence_buckets:List[List[str]], num_procs:int=6) ->Tuple[List[List[int]], Dict[Tuple[int, int], list]]:
+def reduce_pairs_and_locations_from_buckets(sentence_buckets:List[str], num_procs:int=6) -> Tuple[List[List[int]], Dict[Tuple[int, int], list]]:
     ans = joblib.Parallel(n_jobs=num_procs, backend="loky")(
     joblib.delayed(generate_pairs_and_location_from_buckets)(sentence_bucket)
     for sentence_bucket in tqdm(sentence_buckets, total=len(sentence_buckets)))
@@ -96,7 +101,7 @@ def get_pairs_and_locations_from_buckets(sentence_buckets:List[List[str]], num_p
     final_indices:list[List[int]] = []
     final_counts_locations = {}
     last_offset:int = 0
-    for indices, counts_and_location_shard, offset in tqdm(ans, desc="reducing parallel output"):
+    for indices, counts_and_location_shard, offset in tqdm(ans, desc="Reducing parallel output"):
         assert offset == len(indices), f"offset: {offset} is wrong. len: {len(indices)}"
         if not final_indices:
             final_indices = deepcopy(indices)
@@ -104,20 +109,14 @@ def get_pairs_and_locations_from_buckets(sentence_buckets:List[List[str]], num_p
             last_offset = offset
             continue
 
-        final_indices.extend([index + last_offset for index in indices])
-        
+        final_indices.extend(indices)
         for pair, (counts, locations) in counts_and_location_shard.items():
             final_counts_locations[pair] = final_counts_locations.get(pair, [0, defaultdict(int)])
             final_counts_locations[pair][0] += counts
             for index in locations:
-                final_counts_locations[pair][1].append(index + last_offset)
+                final_counts_locations[pair][1][index + last_offset] += 1
         last_offset = offset
     return final_indices, final_counts_locations
-    
-
-# TODO: have a final function that consolidate the generate_pairs_And location result
-# TODO: by iterating through the dictionaries updating the values to a master one, offseting the indexes by idx and concatenating the indices in the correct order
-# TODO: master dict master indices, next indicies concate and offset by idx, iterate through next dict and update counts and indices by offseting by idx
     
 def build_pairs_and_locations(indices: List[int], counts_and_locations: Dict[Tuple[int, int], list], index: int) -> Dict[Tuple[int, int], list]:
     for pair in zip(indices, indices[1:]):
@@ -131,10 +130,17 @@ class BPE():
         self.params = BPETokenizerParams({}, {})
         self.special_tokens: Set[str] = set()
 
-    def _pre_tokenize(self, pattern:re.Pattern , filename:str, endLine:bool=True) -> List[str]:
-        with open(filename, "r") as F:
-            for line in F:
-                yield re.findall(pattern, line)
+    def _get_pairs_and_locations(self, regex:re.Pattern , filename:str) ->  Tuple[List[List[int]], Dict[Tuple[int, int], list]]:
+        indices: List[List[int]] = []
+        counts_and_locations: Dict[Tuple[int, int], list] = {}
+        idx:int = 0
+        for sentence in pre_tokenize(regex, filename):
+            for word in sentence:
+                word_ints: List[int] = list(word.encode("utf-8"))
+                indices.append(word_ints)
+                counts_and_locations = build_pairs_and_locations(word_ints, counts_and_locations, idx)
+                idx += 1
+        return indices, counts_and_locations
 
     def save_merges_and_vocab_to_txt(self, prefix="") -> None:
         with open(f"{prefix}_merges.txt", "w") as f:
@@ -213,11 +219,8 @@ class BPE():
             indices[indices_index] = new_indices
         return indices, counts_and_locations, pairs_to_update_counts
     
-    
     def train(self, input_path:str | os.PathLike, vocab_size:int, special_tokens:List[str], regex_pattern:str="GPT4", debug:bool=False, useControl_characters:bool = False, useHeap: bool = False) -> None:
         regex:re.Pattern = get_regex_pattern(regex_pattern)      
-        counts_and_locations: Dict[Tuple[int, int], list] = {}
-        indices: List[List[int]] = []
         
         for i in range(len(special_tokens)):
             self.special_tokens.add(special_tokens[i])
@@ -229,15 +232,7 @@ class BPE():
         else:
             self.params.vocab.update(gpt2_bytes_to_unicode(len(special_tokens)))
 
-        idx = 0
-        for sentence in self._pre_tokenize(regex, input_path):
-            for word in sentence:
-                word_ints: List[int] = list(word.encode("utf-8"))
-                indices.append(word_ints)
-                counts_and_locations = build_pairs_and_locations(word_ints, counts_and_locations, idx)
-                idx += 1
-
-        print("tokenized")
+        indices, counts_and_locations = self._get_pairs_and_locations(regex, input_path)
         
         if useHeap:
             heap: List[Tuple[int, Tuple[int, int]]] = []
@@ -291,6 +286,8 @@ class BPE():
                 del sorted_ties, ties       
 
             new_index = start_index + idx
+            if new_index == 274:
+                print()
             self.params.merges[(pair[0], pair[1])] = new_index
             self.params.vocab[new_index] = self.params.vocab[pair[0]] + self.params.vocab[pair[1]]
 
@@ -303,7 +300,6 @@ class BPE():
                 for key in pairs_to_update_counts:
                     heapq.heappush(heap, (-counts_and_locations[key][0], key))
     
-    
     def decode(self, indices):
         sentence = []
         for idx in indices:
@@ -313,7 +309,6 @@ class BPE():
                 raise ValueError(f"Invalid token id: {idx} resulting in unknown token")
         return b"".join(sentence).decode("utf-8", errors="replace")
     
-
     def encode(self, indices):
         sentence = []
         for idx in indices:
@@ -322,6 +317,19 @@ class BPE():
             else:
                 raise ValueError(f"Invalid token id: {idx} resulting in unknown token")
         return b"".join(sentence).decode("utf-8", errors="replace")
+
+class BPE_parallel(BPE):
+    def __init__(self, num_procs:int = 6, EOF_token:str="\n",  *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.num_procs:int = num_procs
+        self.EOF_token = EOF_token
+
+    def _get_pairs_and_locations(self, regex:re.Pattern , filename:str) ->  Tuple[List[List[int]], Dict[Tuple[int, int], list]]:
+        sentence_buckets = generate_sentence_buckets(filename, EOF_token=self.EOF_token, num_proc=self.num_procs)
+        for i in range(len(sentence_buckets)):
+            assert len(sentence_buckets[i]) > 1, f"empty bucket {i}"
+        tokenized_buckets = pre_tokenize_buckets(regex, sentence_buckets, self.num_procs)
+        return reduce_pairs_and_locations_from_buckets(tokenized_buckets, self.num_procs)
 
 
 # vocab, merges = train_BPE("/home/dk/code/minbpe/tests/taylorswift.txt", 512, [])
@@ -340,11 +348,12 @@ class BPE():
 # print(f"memory usage: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024**3} Gb")
 
 t0 = time.time()
-bpe = BPE()
-bpe.train("data/TinyStoriesV2-GPT4-valid.txt", 10000, ["<|endoftext|>"], "GPT2")
+bpe = BPE_parallel()
+bpe.train("tests/fixtures/corpus.en", 500, ["<|endoftext|>"], "GPT2")
 t1 = time.time()
 print(f"Training took {t1 - t0:.2f} seconds")
-bpe.serialize_merges_and_vocab("tinyStories_val")
+bpe.serialize_merges_and_vocab("parallel_tiny_val")
+bpe.save_merges_and_vocab_to_txt("parallel")
 print(f"memory usage: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024**3} Gb")
 
 
