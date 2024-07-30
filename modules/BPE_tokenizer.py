@@ -84,10 +84,10 @@ def generate_sentence_buckets(regex:re.Pattern, filename:str, EOF_token:str='<|e
                 i += 1
                 chunk = 0
                 bucket = ""
-                print(f"launched proceess {i}")
+                pbar.set_description(f"launched proceess {i} of {num_proc}")
+                
             chunk += 1
         if i == num_proc - 1 and bucket != "":
-            print(f"launched proceess {i+1}")
             sentence_buckets[num_proc - 1] = p.apply_async(re.findall, (regex, bucket))
 
 
@@ -364,11 +364,11 @@ class BPE_parallel(BPE):
 if __name__ == "__main__":
     t0 = time.time()
     bpe = BPE_parallel(num_procs=6)
-    bpe.train("data/TinyStoriesV2-GPT4-valid.txt", 500, ["<|endoftext|>"], "GPT2")
+    bpe.train("data/TinyStoriesV2-GPT4-train.txt", 500, ["<|endoftext|>"], "GPT2")
     t1 = time.time()
     print(f"Training took {t1 - t0:.2f} seconds")
     # bpe.serialize_merges_and_vocab("parallel__val")
-    bpe.save_merges_and_vocab_to_txt("parallel")
-    print(f"memory usage: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024**3} Gb")
+    bpe.save_merges_and_vocab_to_txt("paralleltiny")
+    print(f"memory usage: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024**3:.4f} Gb")
 
 
