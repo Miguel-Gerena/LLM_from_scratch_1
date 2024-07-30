@@ -1,4 +1,5 @@
 from copy import deepcopy
+import multiprocessing.pool
 import regex as re
 from dataclasses import dataclass
 from typing import List,Tuple, Dict, DefaultDict, Deque, Set, OrderedDict as OD
@@ -10,6 +11,7 @@ import os
 import pickle
 import joblib
 from tqdm import tqdm
+import multiprocessing
 
 
 @dataclass(frozen=True)
@@ -65,27 +67,41 @@ def pre_tokenize(pattern:re.Pattern , filename:str) -> List[str]:
         for line in F:
             yield re.findall(pattern, line)
 
-def generate_sentence_buckets(filename:str, EOF_token:str='<|endoftext|>', num_proc:int=6) -> List[str]:
+def generate_sentence_buckets(regex:re.Pattern, filename:str, EOF_token:str='<|endoftext|>', num_proc:int=6) -> List[str]:
     sentence_buckets = ["" for _ in range(num_proc)]
     i = 0
+    bucket = ""
+    chunk = 0
+    p = multiprocessing.Pool(num_proc)
     with open(filename, "r") as F:
-        for line in F:
-            sentence_buckets[i%num_proc] += line
-            if line[-1] == EOF_token or line == EOF_token or line == EOF_token+"\n":
+        total_num_lines = len(F.readlines())
+        F.seek(0,0)
+        pbar = tqdm(F, desc=f"Distributing file into buckets", total=total_num_lines)
+        for line in pbar:
+            bucket += line
+            if (line == EOF_token or line == EOF_token+"\n") and chunk >= total_num_lines//num_proc:
+                sentence_buckets[i] = p.apply_async(re.findall, (regex, bucket))
                 i += 1
-    return sentence_buckets
+                chunk = 0
+                bucket = ""
+                print(f"launched proceess {i}")
+            chunk += 1
+        if i == num_proc - 1 and bucket != "":
+            print(f"launched proceess {i+1}")
+            sentence_buckets[num_proc - 1] = p.apply_async(re.findall, (regex, bucket))
 
-def pre_tokenize_buckets(pattern:re.Pattern, sentences_buckets:List[str], num_procs:int=6) -> List[str]:
-    ans = joblib.Parallel(n_jobs=num_procs, backend="loky")(
-    joblib.delayed(re.findall)(pattern, sentence_bucket)
-    for sentence_bucket in tqdm(sentences_buckets, total=len(sentences_buckets), desc="Tokenizing Buckets"))
-    return ans
+
+    print("Tokenizing and waiting for other processes")
+    for i in range(len(sentence_buckets)):
+        sentence_buckets[i] = sentence_buckets[i].get()
+        assert len(sentence_buckets[i] )> 1, f"Bucket {i} is empty"   
+    return sentence_buckets
 
 def generate_pairs_and_location_from_buckets(sentence_bucket:List[str]) -> Tuple[List[List[int]], Dict[Tuple[int, int], list], int]:
     indices: List[List[int]] = []
     counts_and_locations: Dict[Tuple[int, int], list] = {}
     idx:int=0
-    for sentence in sentence_bucket:
+    for sentence in [sentence_bucket]:
         for word in sentence:
             word_ints: List[int] = list(word.encode("utf-8"))
             indices.append(word_ints)
@@ -278,7 +294,7 @@ class BPE():
                 sorted_ties = sorted([((self.params.vocab[char[0]] + self.params.vocab[char[1]]).decode("utf-8"), char, value) for char, value in ties.items()])
                 if debug:
                     assert [p[0] for p in sorted_ties] == sorted([p[0] for p in ties]), f"sorted ties aren't sorted correctly"
-                pair = sorted_ties[0][1]
+                pair = sorted_ties[-1][1]
                 if useHeap:
                     for _, pair_to_heap, counts in sorted_ties:
                         if pair != pair_to_heap:
@@ -318,17 +334,15 @@ class BPE():
                 raise ValueError(f"Invalid token id: {idx} resulting in unknown token")
         return b"".join(sentence).decode("utf-8", errors="replace")
 
+
 class BPE_parallel(BPE):
-    def __init__(self, num_procs:int = 6, EOF_token:str="\n",  *args, **kwargs) -> None:
+    def __init__(self, num_procs:int = 6, EOF_token:str="<|endoftext|>",  *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.num_procs:int = num_procs
         self.EOF_token = EOF_token
 
     def _get_pairs_and_locations(self, regex:re.Pattern , filename:str) ->  Tuple[List[List[int]], Dict[Tuple[int, int], list]]:
-        sentence_buckets = generate_sentence_buckets(filename, EOF_token=self.EOF_token, num_proc=self.num_procs)
-        for i in range(len(sentence_buckets)):
-            assert len(sentence_buckets[i]) > 1, f"empty bucket {i}"
-        tokenized_buckets = pre_tokenize_buckets(regex, sentence_buckets, self.num_procs)
+        tokenized_buckets = generate_sentence_buckets(regex, filename, EOF_token=self.EOF_token, num_proc=self.num_procs)
         return reduce_pairs_and_locations_from_buckets(tokenized_buckets, self.num_procs)
 
 
@@ -347,13 +361,14 @@ class BPE_parallel(BPE):
 # bpe.serialize_merges_and_vocab("tinyStories_train")
 # print(f"memory usage: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024**3} Gb")
 
-t0 = time.time()
-bpe = BPE_parallel()
-bpe.train("tests/fixtures/corpus.en", 500, ["<|endoftext|>"], "GPT2")
-t1 = time.time()
-print(f"Training took {t1 - t0:.2f} seconds")
-bpe.serialize_merges_and_vocab("parallel_tiny_val")
-bpe.save_merges_and_vocab_to_txt("parallel")
-print(f"memory usage: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024**3} Gb")
+if __name__ == "__main__":
+    t0 = time.time()
+    bpe = BPE_parallel(num_procs=6)
+    bpe.train("data/TinyStoriesV2-GPT4-valid.txt", 500, ["<|endoftext|>"], "GPT2")
+    t1 = time.time()
+    print(f"Training took {t1 - t0:.2f} seconds")
+    # bpe.serialize_merges_and_vocab("parallel__val")
+    bpe.save_merges_and_vocab_to_txt("parallel")
+    print(f"memory usage: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024**3} Gb")
 
 
