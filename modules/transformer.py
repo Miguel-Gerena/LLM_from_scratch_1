@@ -38,12 +38,12 @@ class Transformer(nn.Module):
         x = self.transformer_blocks(embed)
         return self.mlp(self.final_norm(x))
 
+    @torch.inference_mode
     def generate(self, input_ids: torch.Tensor, stop_tokens: List[int], max_tokens:int, temperature:float, top_p:float = 1) -> List[int]:
         sampled_tokens: List[int] = []
         self.eval()
         while True:
-            with torch.inference_mode():
-                generated = self.forward(input_ids)
+            generated = self.forward(input_ids)
             probs = softmax(generated/temperature, dim=-1)
 
             highest_prob = torch.argmax(probs, dim=-1)[:,-1]
