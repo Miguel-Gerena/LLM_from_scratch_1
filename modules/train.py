@@ -64,11 +64,16 @@ def train(args, model:torch.nn.Module, optim:torch.optim.Optimizer, epochs:int, 
     print("training")
     with torch.autocast(device_type=args.device, dtype=torch.bfloat16):
         for _ in range(0, epochs):
-            for i, (x, y) in enumerate(tqdm(dataloader, total=args.train_step)):
+            for i, data in enumerate(tqdm(dataloader, total=args.train_step)):
                 lr = cosine_learning_warmup(i, args.lr, args.min_lr, args.warm_up_steps, args.train_step * 0.9)
                 optim.param_groups[0]["lr"] = lr
-                print("forwaed")
-                logits = model(x)
+                print("forward")
+                if args.num_experts > 1:
+                    x, y, class_id = data
+                    logits = model(x, class_id)
+                else:
+                    x, y = data
+                    logits = model(x)
                 optim.zero_grad()
                 loss = critereon(logits, y)
                 print("back")
@@ -98,7 +103,7 @@ if __name__ == "__main__":
     parser.add_argument("--val_data_path", type=str, default="data/TinyStoriesV2-GPT4-valid.npy")
     
     # Model args
-    parser.add_argument("--num_experts", type=int, default=0)
+    parser.add_argument("--num_experts", type=int, default=1)
     parser.add_argument("--pre_norm", type=bool, default=True)
     parser.add_argument("--context_length", type=int, default=256)
     parser.add_argument("--vocab_size", type=int, default=50257)

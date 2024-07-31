@@ -1,4 +1,3 @@
-from turtle import forward
 import torch
 from torch import nn
 from typing import List, overload
@@ -37,12 +36,6 @@ class Transformer(nn.Module):
         embed = self.embed_drop(self.embed_layer(x) + self.pos_embeding[None, :x.shape[-1], :])
         x = self.transformer_blocks(embed)
         return self.mlp(self.final_norm(x))
-
-    # def forward(self, x: torch.tensor, class_id:int) -> torch.tensor:
-    #     embed = self.embed_drop(self.embed_layer(x) + self.pos_embeding[None, :x.shape[-1], :])
-    #     x = self.transformer_blocks((embed, class_id))[0]
-    #     return self.mlp(self.final_norm(x))
-    
 
     @torch.inference_mode
     def generate(self, input_ids: torch.Tensor, stop_tokens: List[int], max_tokens:int, temperature:float, top_p:float = 1) -> List[int]:

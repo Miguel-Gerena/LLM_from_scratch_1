@@ -1,3 +1,4 @@
+from typing import Tuple
 from torch import nn
 import torch
 
@@ -8,12 +9,12 @@ class RMSnorm(nn.Module):
         self.ln = nn.Parameter(torch.ones(dim))
         self.eps = eps
     
-    def forward(self, x:torch.FloatTensor):
+    def forward(self, x:torch.FloatTensor) -> torch.tensor:
         rms = torch.sqrt(torch.mean(torch.square(x), dim=-1, keepdim=True) + self.eps)
         return torch.div(x, rms) * self.ln 
 
 
-def gelu(x:torch.FloatTensor):
+def gelu(x:torch.FloatTensor) -> torch.tensor:
     return 0.5 * x * (1 + torch.erf(torch.div(x, torch.sqrt(torch.tensor(2)))))
     
 
@@ -23,7 +24,7 @@ class FF(nn.Module):
         self.ff1 = nn.Linear(d_model, d_ff, bias=False)
         self.ff2 = nn.Linear(d_ff, d_model, bias=False)
     
-    def forward(self, x:torch.FloatTensor):
+    def forward(self, x:torch.FloatTensor) -> torch.FloatTensor:
         a = gelu(self.ff1(x))
         return  self.ff2(a)
     
@@ -40,7 +41,7 @@ class Attention(nn.Module):
         self.p_drop = p_drop
         self.dropout = nn.Dropout(p_drop if p_drop else 0)
     
-    def forward(self, Q:torch.FloatTensor, K:torch.FloatTensor, V:torch.FloatTensor, mask:torch.FloatTensor):
+    def forward(self, Q:torch.FloatTensor, K:torch.FloatTensor, V:torch.FloatTensor, mask:torch.FloatTensor) -> torch.FloatTensor:
         head_dim = torch.tensor(K.shape[-1])
         if len(Q.shape) > 3:
             K = torch.permute(K, (0, 1, 3, 2))     
@@ -84,7 +85,7 @@ class Multi_Head_Attention(nn.Module):
         self.fused_qkv.weight.data[self.d_model:2*self.d_model, :] =  K.view(self.d_model, self.d_model)
         self.fused_qkv.weight.data[2*self.d_model:3*self.d_model, :] =  V.view(self.d_model, self.d_model)
 
-    def forward(self, x:torch.FloatTensor):
+    def forward(self, x:torch.FloatTensor) -> torch.FloatTensor:
         B, source_seq_len = x.shape[0:2]
         target_seq_len = self.d_model
         num_head = self.num_heads
@@ -123,7 +124,7 @@ class Transformer_block(nn.Module):
         self.ff.ff1.weight.data[:] =  weights["ffn.w1.weight"]
         self.ff.ff2.weight.data[:] =  weights["ffn.w2.weight"]
 
-    def forward(self, x):
+    def forward(self, x:torch.tensor) -> torch.FloatTensor:
         if self.pre_norm:
             att = self.mha(self.rms_norm1(x)) + x
             ff = self.res_drop(self.ff(self.rms_norm2(att))) + att
@@ -137,19 +138,20 @@ class MOE_Transformer_block(Transformer_block):
         super().__init__(*args, **kwargs)
         self.ff_dict = {}
         for i in range(num_experts):
-            self.ff_dict[i] = FF(self.d_model, self.d_ff)
+            self.ff_dict[f"moe{i}"] = FF(self.d_model, self.d_ff)
+        self.ff = nn.ModuleDict(self.ff_dict)
     
-    def forward(self, args):
+    def forward(self, args:Tuple[torch.tensor, int]) :  # nq:override -> Tuple[torch.FloatTensor, int]
         x, expert_index = args
         if self.pre_norm:
             att = self.mha(self.rms_norm1(x)) + x
-            ff = self.res_drop(self.ff_dict[expert_index](self.rms_norm2(att))) + att
+            ff = self.res_drop(self.ff[f"moe{expert_index}"](self.rms_norm2(att))) + att
         else:
             att = self.rms_norm1(self.mha(x) + x)
-            ff = self.rms_norm2(self.res_drop(self.ff_dict[expert_index](att)) + att)
+            ff = self.rms_norm2(self.res_drop(self.ff[f"moe{expert_index}"](att)) + att)
         return ff, expert_index
     
-def transformer_layers(num_layers:int, d_model:int, num_heads:int, d_ff:int, attn_drop:float|None = None,  res_drop:float|None = None, pre_norm:bool=True, num_experts:int=0):
+def transformer_layers(num_layers:int, d_model:int, num_heads:int, d_ff:int, attn_drop:float|None = None,  res_drop:float|None = None, pre_norm:bool=True, num_experts:int=0) -> nn.Module:
     if  num_experts <= 1:
         return nn.Sequential(*[Transformer_block(d_model, num_heads, d_ff, attn_drop, res_drop, pre_norm) for _ in range(num_layers)])
     return nn.Sequential(*[MOE_Transformer_block(num_experts, d_model, num_heads, d_ff, attn_drop, res_drop, pre_norm) for _ in range(num_layers)])
