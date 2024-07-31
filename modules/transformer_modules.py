@@ -105,6 +105,7 @@ class Transformer_block(nn.Module):
         self.num_heads = num_heads
         self.head_dim = d_model // num_heads
         self.pre_norm = pre_norm
+        self.d_ff = d_ff
 
         self.mha = Multi_Head_Attention(d_model, num_heads, attn_drop)
         self.ff = FF(d_model, d_ff)
@@ -131,7 +132,26 @@ class Transformer_block(nn.Module):
             ff = self.rms_norm2(self.res_drop(self.ff(att)) + att)
         return ff
 
-def transformer_layers(num_layers:int, d_model:int, num_heads:int, d_ff:int, attn_drop:float|None = None,  res_drop:float|None = None, pre_norm:bool=True):
-    return nn.Sequential(*[Transformer_block(d_model, num_heads, d_ff, attn_drop, res_drop) for _ in range(num_layers)])
+class MOE_Transformer_block(Transformer_block):
+    def __init__(self, num_experts:int, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.ff_dict = {}
+        for i in range(num_experts):
+            self.ff_dict[i] = FF(self.d_model, self.d_ff)
+    
+    def forward(self, args):
+        x, expert_index = args
+        if self.pre_norm:
+            att = self.mha(self.rms_norm1(x)) + x
+            ff = self.res_drop(self.ff_dict[expert_index](self.rms_norm2(att))) + att
+        else:
+            att = self.rms_norm1(self.mha(x) + x)
+            ff = self.rms_norm2(self.res_drop(self.ff_dict[expert_index](att)) + att)
+        return ff, expert_index
+    
+def transformer_layers(num_layers:int, d_model:int, num_heads:int, d_ff:int, attn_drop:float|None = None,  res_drop:float|None = None, pre_norm:bool=True, num_experts:int=0):
+    if  num_experts <= 1:
+        return nn.Sequential(*[Transformer_block(d_model, num_heads, d_ff, attn_drop, res_drop, pre_norm) for _ in range(num_layers)])
+    return nn.Sequential(*[MOE_Transformer_block(num_experts, d_model, num_heads, d_ff, attn_drop, res_drop, pre_norm) for _ in range(num_layers)])
 
 

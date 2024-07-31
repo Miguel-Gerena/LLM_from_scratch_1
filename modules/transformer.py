@@ -1,9 +1,9 @@
+from turtle import forward
 import torch
 from torch import nn
-from typing import List
+from typing import List, overload
 
 from modules.transformer_modules import RMSnorm, transformer_layers, softmax
-
 
 
 class Transformer(nn.Module):
@@ -12,7 +12,7 @@ class Transformer(nn.Module):
         self.num_layers = num_layers
         self.d_model = d_model
         self.context_length = context_length
-        self.transformer_blocks = transformer_layers(num_layers, d_model, num_heads, d_ff, attn_drop, res_drop)
+        self.transformer_blocks = transformer_layers(num_layers, d_model, num_heads, d_ff, attn_drop, res_drop, pre_norm)
         self.embed_layer = nn.Embedding(vocab_size, d_model)
         self.pos_embeding = nn.Parameter(torch.zeros(context_length, d_model))
         self.mlp = nn.Linear(d_model, vocab_size, bias=False)
@@ -38,6 +38,12 @@ class Transformer(nn.Module):
         x = self.transformer_blocks(embed)
         return self.mlp(self.final_norm(x))
 
+    # def forward(self, x: torch.tensor, class_id:int) -> torch.tensor:
+    #     embed = self.embed_drop(self.embed_layer(x) + self.pos_embeding[None, :x.shape[-1], :])
+    #     x = self.transformer_blocks((embed, class_id))[0]
+    #     return self.mlp(self.final_norm(x))
+    
+
     @torch.inference_mode
     def generate(self, input_ids: torch.Tensor, stop_tokens: List[int], max_tokens:int, temperature:float, top_p:float = 1) -> List[int]:
         sampled_tokens: List[int] = []
@@ -55,3 +61,13 @@ class Transformer(nn.Module):
             sampled_tokens.append(highest_prob.item())
             max_tokens -= 1
             input_ids = highest_prob.unsqueeze(0).to(input_ids.device)
+
+class MOE_Transformer(Transformer):
+    def __init__(self, context_length: int, vocab_size: int, num_layers: int, d_model: int, num_heads: int, d_ff: int, attn_drop: float | None = None, res_drop: float | None = None, pre_norm: bool = True, num_experts: int = 0):
+        super().__init__(context_length, vocab_size, num_layers, d_model, num_heads, d_ff, attn_drop, res_drop, pre_norm)
+        self.transformer_blocks = transformer_layers(num_layers, d_model, num_heads, d_ff, attn_drop, res_drop, pre_norm, num_experts)
+      
+    def forward(self, x, class_id):
+        embed = self.embed_drop(self.embed_layer(x) + self.pos_embeding[None, :x.shape[-1], :])
+        x = self.transformer_blocks((embed, class_id))[0]
+        return self.mlp(self.final_norm(x))
