@@ -1,0 +1,4 @@
+MMLU: https://github.com/hendrycks/test/blob/master/README.md
+GSM8k: https://github.com/openai/grade-school-math
+MATH: https://github.com/hendrycks/math
+GPQA: https://github.com/idavidrein/gpqa/
