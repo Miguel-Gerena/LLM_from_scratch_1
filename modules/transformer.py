@@ -33,9 +33,10 @@ class Transformer(nn.Module):
         self.final_norm.ln.data[:] = weights["ln_final.weight"]
 
     def forward(self, x: torch.tensor) -> torch.tensor:
-        embed = self.embed_drop(self.embed_layer(x) + self.pos_embeding[None, :x.shape[-1], :])
-        x = self.transformer_blocks(embed)
-        return self.mlp(self.final_norm(x))
+        x = self.embed_drop(self.embed_layer(x) + self.pos_embeding[None, :x.shape[-1], :])
+        x = self.transformer_blocks(x)
+        x = self.mlp(self.final_norm(x)).permute([0,2,1])
+        return x
 
     @torch.inference_mode
     def generate(self, input_ids: torch.Tensor, stop_tokens: List[int], max_tokens:int, temperature:float, top_p:float = 1) -> List[int]:
@@ -63,4 +64,4 @@ class MOE_Transformer(Transformer):
     def forward(self, x, class_id):
         embed = self.embed_drop(self.embed_layer(x) + self.pos_embeding[None, :x.shape[-1], :])
         x = self.transformer_blocks((embed, class_id))[0]
-        return self.mlp(self.final_norm(x))
+        return self.mlp(self.final_norm(x)).permute([0,2,1])

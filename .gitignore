@@ -167,5 +167,6 @@ wandb/
 *.pkl
 tokenize.py
 tokenize_.py
+modules2
 
 *.npy

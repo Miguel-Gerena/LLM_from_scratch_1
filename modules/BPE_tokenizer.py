@@ -7,6 +7,8 @@ import time
 import resource
 import os
 import pickle
+import gc
+from tqdm import tqdm
 
 from BPE_util import (BPETokenizerParams, build_pairs_and_locations,
                     generate_sentence_buckets, pre_tokenize, gpt2_bytes_to_unicode,
@@ -22,7 +24,7 @@ class BPE():
         indices: List[List[int]] = []
         counts_and_locations: Dict[Tuple[int, int], list] = {}
         idx:int = 0
-        for sentence in pre_tokenize(regex, filename):
+        for sentence in tqdm(pre_tokenize(regex, filename), total=lines):
             for word in sentence:
                 word_ints: List[int] = list(word.encode("utf-8"))
                 indices.append(word_ints)
@@ -121,6 +123,7 @@ class BPE():
             self.params.vocab.update(gpt2_bytes_to_unicode(len(special_tokens)))
 
         indices, counts_and_locations = self._get_pairs_and_locations(regex, input_path)
+        print("Training")
         
         if useHeap:
             heap: List[Tuple[int, Tuple[int, int]]] = []
@@ -129,7 +132,8 @@ class BPE():
 
         start_index = len(self.params.vocab)
         num_merges = vocab_size - start_index
-        for idx in range(num_merges):
+        gc.collect()
+        for idx in tqdm(range(num_merges)):
             pair: Tuple[int, int]  = (0, 0)
             if useHeap:
                 max_counts, pair = heapq.heappop(heap)
@@ -220,9 +224,9 @@ class BPE_parallel(BPE):
 
 # vocab, merges = train_BPE("/home/dk/code/minbpe/tests/taylorswift.txt", 512, [])
 
-# with open(r"data/TinyStoriesV2-GPT4-train.txt", 'r') as fp:
-#     lines = len(fp.readlines())
-#     print('Total Number of lines:', lines)
+with open(r"data/TinyStoriesV2-GPT4-train.txt", 'r') as fp:
+    lines = len(fp.readlines())
+    print('Total Number of lines:', lines)
 
 
 # t0 = time.time()
@@ -235,8 +239,8 @@ class BPE_parallel(BPE):
 
 if __name__ == "__main__":
     t0 = time.time()
-    bpe = BPE_parallel(num_procs=6)
-    bpe.train("tests/fixtures/corpus.en", 500, ["<|endoftext|>"], "GPT2")
+    bpe = BPE()
+    bpe.train("data/TinyStoriesV2-GPT4-train.txt", 10000, ["<|endoftext|>"], "GPT2")
     t1 = time.time()
     print(f"Training took {t1 - t0:.2f} seconds")
     # bpe.serialize_merges_and_vocab("parallel__val")

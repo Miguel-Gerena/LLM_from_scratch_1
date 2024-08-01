@@ -30,7 +30,7 @@ class FF(nn.Module):
     
 def softmax(x:torch.FloatTensor, dim:int) -> torch.tensor:
     max_x = torch.max(x)
-    x -= max_x
+    x = x - max_x
     max_sum = torch.sum(torch.exp(x), dim=dim, keepdim=True)
     return torch.div(torch.exp(x), max_sum)
     
@@ -97,7 +97,8 @@ class Multi_Head_Attention(nn.Module):
 
         mask = torch.triu(torch.ones((source_seq_len, source_seq_len), dtype=torch.bool, device=x.device), diagonal=1)
         output = self.attention_dot_prod(Q, K, V, mask)
-        return  self.proj(output.transpose(1,2).reshape(B, source_seq_len, self.d_model))
+        output =  self.proj(output.transpose(1,2).reshape(B, source_seq_len, self.d_model))
+        return output
     
 class Transformer_block(nn.Module):
     def __init__(self, d_model:int, num_heads:int, d_ff:int, attn_drop:float|None = None,  res_drop:float|None = None, pre_norm:bool=True ) :
@@ -126,12 +127,12 @@ class Transformer_block(nn.Module):
 
     def forward(self, x:torch.tensor) -> torch.FloatTensor:
         if self.pre_norm:
-            att = self.mha(self.rms_norm1(x)) + x
-            ff = self.res_drop(self.ff(self.rms_norm2(att))) + att
+            x = self.mha(self.rms_norm1(x)) + x
+            x = self.res_drop(self.ff(self.rms_norm2(x))) + x
         else:
-            att = self.rms_norm1(self.mha(x) + x)
-            ff = self.rms_norm2(self.res_drop(self.ff(att)) + att)
-        return ff
+            x = self.rms_norm1(self.mha(x) + x)
+            x = self.rms_norm2(self.res_drop(self.ff(x)) + x)
+        return x
 
 class MOE_Transformer_block(Transformer_block):
     def __init__(self, num_experts:int, *args, **kwargs):

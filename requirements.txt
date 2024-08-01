@@ -1,5 +1,6 @@
 regex
-torch==2.2.1
+torch
 numpy
 mypy
 tqdm
+joblib

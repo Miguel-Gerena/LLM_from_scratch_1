@@ -6,6 +6,7 @@ from collections import defaultdict
 import joblib
 from tqdm import tqdm
 import multiprocessing
+import gc
 
 
 @dataclass(frozen=True)
@@ -103,10 +104,15 @@ def generate_pairs_and_location_from_buckets(sentence_bucket:List[str]) -> Tuple
     return indices, counts_and_locations, idx
 
 def reduce_pairs_and_locations_from_buckets(sentence_buckets:List[str], num_procs:int=6) -> Tuple[List[List[int]], Dict[Tuple[int, int], list]]:
-    ans = joblib.Parallel(n_jobs=num_procs, backend="loky")(
-    joblib.delayed(generate_pairs_and_location_from_buckets)(sentence_bucket)
-    for sentence_bucket in tqdm(sentence_buckets, total=len(sentence_buckets)))
-
+    gc.collect()
+    p = multiprocessing.Pool(num_procs)
+    procsesses = []
+    ans = ["" for _ in range(num_procs)]
+    for bucket in sentence_buckets:
+        procsesses.append(p.apply_async(generate_pairs_and_location_from_buckets, (bucket)))
+    for i in range(len(num_procs)):
+        ans[i] = procsesses[i].get()
+    gc.collect()
     # info = ""
     # total = 0
     # for a in ans:
@@ -119,7 +125,9 @@ def reduce_pairs_and_locations_from_buckets(sentence_buckets:List[str], num_proc
     final_indices:list[List[int]] = []
     final_counts_locations = {}
     last_offset:int = 0
-    for indices, counts_and_location_shard, offset in tqdm(ans, desc="Reducing parallel output"):
+    for i, indices, counts_and_location_shard, offset in enumerate(tqdm(ans, desc="Reducing parallel output")):
+        ans[i] = ""
+        gc.collect()
         assert offset == len(indices), f"offset: {offset} is wrong. len: {len(indices)}"
         if not final_indices:
             final_indices = deepcopy(indices)
