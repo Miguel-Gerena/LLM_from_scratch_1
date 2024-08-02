@@ -169,4 +169,4 @@ tokenize.py
 tokenize_.py
 modules2
 *.weights
-*.npy
+# *.npy
