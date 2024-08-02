@@ -4,3 +4,4 @@ numpy
 mypy
 tqdm
 joblib
+wandb
