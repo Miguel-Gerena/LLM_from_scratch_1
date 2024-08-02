@@ -238,6 +238,7 @@ if __name__ == "__main__":
     parser.add_argument("--backend", type=str, default="inductor", choices=['inductor', 'aot_eager', 'cudagraphs'])
     args = parser.parse_args()
     
+    os.makedirs("weights", exist_ok=True)
     if args.eval:
         for file in os.listdir("weights"):
             if "final" in file:
