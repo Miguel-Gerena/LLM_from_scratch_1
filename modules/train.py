@@ -7,7 +7,7 @@ from typing import Tuple
 import numpy as np
 from data_loader import train_data_generator, val_data_generator
 from tqdm import tqdm
-from training_util import clip_gradient, cosine_learning_warmup
+from training_util import clip_gradient, cosine_learning_warmup, save_checkpoint, load_checkpoint
 import wandb
 import os
 import sys
@@ -18,19 +18,7 @@ os.environ["WANDB_AGENT_MAX_INITIAL_FAILURES"]="100"
 
 
 os.environ["TORCHDYNAMO_VERBOSE"]="1"
-def save_checkpoint(model:torch.nn.Module, path:str, epoch:int, optim:torch.optim.Optimizer) -> None:
-    torch.save({
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optim.state_dict(),
-            }, path)
 
-def load_checkpoint(model:torch.nn.Module, path:str, optim:torch.optim.Optimizer)-> int:
-    checkpoint = torch.load(path)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    optim.load_state_dict(checkpoint['optimizer_state_dict'])
-    epoch = checkpoint['epoch']
-    return epoch
 
 def main(args):
     torch._dynamo.reset()
@@ -67,7 +55,6 @@ def main(args):
     train_data = np.load(args.train_data_path, mmap_mode="r").astype(np.int32)
     val_data = np.load(args.val_data_path, mmap_mode="r").astype(np.int32)
 
-
     dataloader = train_data_generator(train_data, args.batch_size, args.context_length, device)
     dataloader_val = val_data_generator(val_data, args.batch_size_val, args.context_length, device)
 
@@ -75,10 +62,11 @@ def main(args):
     total_num_parameters_in_embed_layer = sum([torch.numel(p) if p.requires_grad else 0 for p in model.get_submodule("embed_layer").parameters()])
     
     # args.d_model = args.d_model - 1 if args.d_model%2!= 0 else args.d_model
-    args.training_steps = 47844 * 48//args.batch_size  # 13.28 it/s
+    # args.training_steps = 47844 * 48//args.batch_size //2 # 13.28 it/s
+    args.training_steps = len(train_data) # 13.28 it/s
     args.validate_every = args.validate_every * 48//args.batch_size
     if args.wandb:
-        wandb.init(
+        args.wandb_instance = wandb.init(
         project="LLM",
         name=args.weights_path.split("_")[0].split("/")[-1] if args.eval else None,
         # track hyperparameters and run metadata
@@ -132,13 +120,36 @@ def validate(args, model:torch.nn.Module, dataloader_val, critereon:torch.nn.Mod
     total_loss = torch.tensor(0.0)
     with torch.no_grad():
         for i, (x, y) in enumerate(tqdm(dataloader_val, total=args.val_steps)):
+            x, y = x.to(args.device, non_blocking=True), y.to(args.device, non_blocking=True)
             if i == args.val_steps:
                 if args.wandb:
                     wandb.log({"Average Validation loss":total_loss.item()/(i+1), "Average Validation Perplexity":torch.exp(total_loss/(i+1))}, step=step)
+                del loss, total_loss, logits, model
+                torch.cuda.empty_cache()
                 return total_loss.item()/(i+1)
             logits = model(x)
             loss = critereon(logits, y)
             total_loss += loss.detach().cpu()
+
+def validate_and_save(args, model:torch.nn.Module, optim:torch.optim.Optimizer, dataloader_val, critereon:torch.nn.Module, step:int=0, best_val_loss:float=0, postfix:str=""):
+    val_loss = validate(args, model, dataloader_val, critereon, step)
+    filename = f"weights/{wandb.run.name}{postfix}"
+    if best_val_loss > val_loss:
+        best_val_loss = val_loss
+        with open(f"{filename}.txt", "w") as F:
+            F.write(f"{args}")
+        save_checkpoint(model, f"{filename}.weights", step, optim, args)
+
+    if args.wandb:
+        model_art = wandb.Artifact('model', type='model')   
+        model_art.add_file(f'{filename}.weights')
+        args.wandb_instance.log_artifact(model_art)
+
+        args_art = wandb.Artifact('args', type='args')
+        args_art.add_file(f"{filename}.txt")
+        args.wandb_instance.log_artifact(args_art)
+    return best_val_loss
+
 
 def evaluate(args, model:torch.nn.Module, dataloader_val, critereon:torch.nn.Module, step:int=0):
         model.eval()
@@ -159,12 +170,21 @@ def train(args, model:torch.nn.Module, optim:torch.optim.Optimizer, epochs:int, 
             optim.param_groups[0]["lr"] = learning_rate
             if args.num_experts > 1:
                 x, y, class_id = data
+                x, y = x.to(args.device, non_blocking=True), y.to(args.device, non_blocking=True)
                 logits = model(x, class_id)
             else:
                 x, y = data
+                x, y = x.to(args.device, non_blocking=True), y.to(args.device, non_blocking=True)
                 logits = model(x)
             optim.zero_grad()
             loss = critereon(logits, y)
+
+            if torch.isnan(loss):
+                args.learning_rate = args.learning_rate*.95
+                args.learning_rate_min = args.learning_rate * .1 
+                print(f"nan found in loss. changing max and min lr to {args.learning_rate} and {args.learning_rate_min}")
+                continue
+
             total_loss += loss.detach().cpu()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1)
@@ -173,22 +193,16 @@ def train(args, model:torch.nn.Module, optim:torch.optim.Optimizer, epochs:int, 
             if i%args.log_iter==0 and i != 0 and args.wandb: 
                 wandb.log({"learning_rate": learning_rate, "Training loss": loss.detach().item(), "Average Training  loss":total_loss.item()/(i+1), "Average Training Perplexity":torch.exp(total_loss/(i+1)),  "Training Perplexity":torch.exp(loss.detach())}, step=step)
 
-            if args.validate_every != 0 and i != 0 and i % args.validate_every == 0:
+            if args.validate_every != 0 and i != 0 and i % args.validate_every == 0 or os.path.exists("end"):
                 print(f"time:{time.time()-t0} seconds")
                 model.eval()
-                val_loss = validate(args, model, dataloader_val, critereon, step)
-                if best_val_loss > val_loss:
-                    best_val_loss = val_loss
-                    with open(f"weights/{wandb.run.name}.txt", "w") as F:
-                        F.write(f"{args}")
-                    save_checkpoint(model, f"weights/{wandb.run.name}.weights", step, optim)
+                best_val_loss = validate_and_save(args, model, optim, dataloader_val, critereon, step, best_val_loss)
                 torch._dynamo.reset()
                 model.train()
 
         print(f"Total Train time:{time.time()-t0} seconds")
         model.eval()
-        _ = validate(args, model, dataloader_val, critereon, step)
-        save_checkpoint(model, f"weights/{wandb.run.name}_final.weights", step, optim)
+        best_val_loss = validate_and_save(args, model, optim, dataloader_val, critereon, step, best_val_loss, "_final")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -200,9 +214,9 @@ if __name__ == "__main__":
     # Training args
     parser.add_argument("--max_wall_clock", type=int, default=3600)
     parser.add_argument("--log_iter", type=int, default=200)
-    parser.add_argument("--batch_size", type=int, default=48)
+    parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--batch_size_val", type=int, default=64)
-    parser.add_argument("--warm_up_steps", type=int, default=100)
+    parser.add_argument("--warm_up_steps", type=int, default=200)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--validate_every", type=int, default=10000)
     parser.add_argument("--val_steps", type=int, default=1000)
@@ -218,17 +232,17 @@ if __name__ == "__main__":
     parser.add_argument("--num_heads", type=int, default=8)
     parser.add_argument("--d_model", type=int, default=512)
     parser.add_argument("--d_ff", type=int, default=2048)
-    parser.add_argument("--attn_drop", type=float, default=0.2)
+    parser.add_argument("--attn_drop", type=float, default=0.133468341589087)
     parser.add_argument("--res_drop", type=float, default=0.2)
 
     # Optim args
-    learning_rate = 1e-3
+    learning_rate = 0.005
     parser.add_argument("--learning_rate", type=float, default=learning_rate)
     parser.add_argument("--learning_rate_min", type=float, default=learning_rate*.1)
     parser.add_argument("--beta1", type=float, default=0.9)
     parser.add_argument("--beta2", type= float, default= 0.999)
 
-    parser.add_argument("--weight_decay", type=float, default=0.01)
+    parser.add_argument("--weight_decay", type=float, default=0.024358887816417717)
 
     # Misc args
     parser.add_argument("--seed", type=int, default=123)
