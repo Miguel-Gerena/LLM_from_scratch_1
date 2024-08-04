@@ -5,9 +5,9 @@ from modules.transformer import Transformer, MOE_Transformer
 import argparse
 from typing import Tuple
 import numpy as np
-from data_loader import train_data_generator, val_data_generator
+from modules.data_loader import train_data_generator, val_data_generator
 from tqdm import tqdm
-from training_util import clip_gradient, cosine_learning_warmup, save_checkpoint, load_checkpoint
+from modules.training_util import clip_gradient, cosine_learning_warmup, save_checkpoint, load_checkpoint, get_norms
 import wandb
 import os
 import sys
@@ -45,7 +45,7 @@ def main(args):
         model = Transformer(args.context_length, args.vocab_size, args.num_layers, args.d_model, args.num_heads, args.d_ff, args.attn_drop, args.res_drop, args.pre_norm)
     model.to(device)
     optim = AdamW(model.parameters(), args.learning_rate,(args.beta1, args.beta2), args.weight_decay)
-    critereon = torch.nn.CrossEntropyLoss()
+    critereon:torch.Tensor = torch.nn.CrossEntropyLoss()
     critereon.to(device)
 
     if args.compile:
@@ -121,19 +121,19 @@ def validate(args, model:torch.nn.Module, dataloader_val, critereon:torch.nn.Mod
     with torch.no_grad():
         for i, (x, y) in enumerate(tqdm(dataloader_val, total=args.val_steps)):
             x, y = x.to(args.device, non_blocking=True), y.to(args.device, non_blocking=True)
-            if i == args.val_steps:
-                if args.wandb:
-                    wandb.log({"Average Validation loss":total_loss.item()/(i+1), "Average Validation Perplexity":torch.exp(total_loss/(i+1))}, step=step)
-                del loss, total_loss, logits, model
-                torch.cuda.empty_cache()
-                return total_loss.item()/(i+1)
             logits = model(x)
             loss = critereon(logits, y)
             total_loss += loss.detach().cpu()
+            if i == args.val_steps:
+                if args.wandb:
+                    wandb.log({"Average Validation loss":total_loss.item()/(i+1), "Average Validation Perplexity":torch.exp(total_loss/(i+1))}, step=step)
+                del loss, logits, model
+                torch.cuda.empty_cache()
+                return total_loss.item()/(i+1)
 
 def validate_and_save(args, model:torch.nn.Module, optim:torch.optim.Optimizer, dataloader_val, critereon:torch.nn.Module, step:int=0, best_val_loss:float=0, postfix:str=""):
     val_loss = validate(args, model, dataloader_val, critereon, step)
-    filename = f"weights/{wandb.run.name}{postfix}"
+    filename = f"weights/{wandb.run.name}{postfix}" if args.wandb else "weights/current_run"
     if best_val_loss > val_loss:
         best_val_loss = val_loss
         with open(f"{filename}.txt", "w") as F:
@@ -176,22 +176,22 @@ def train(args, model:torch.nn.Module, optim:torch.optim.Optimizer, epochs:int, 
                 x, y = data
                 x, y = x.to(args.device, non_blocking=True), y.to(args.device, non_blocking=True)
                 logits = model(x)
+
             optim.zero_grad()
             loss = critereon(logits, y)
+            loss.backward()
 
             if torch.isnan(loss):
-                args.learning_rate = args.learning_rate*.95
-                args.learning_rate_min = args.learning_rate * .1 
-                print(f"nan found in loss. changing max and min lr to {args.learning_rate} and {args.learning_rate_min}")
-                continue
-
+                print("Nan in loss.  Exiting...")
+                sys.exit(0)
+                
             total_loss += loss.detach().cpu()
-            loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1)
             optim.step()
 
             if i%args.log_iter==0 and i != 0 and args.wandb: 
-                wandb.log({"learning_rate": learning_rate, "Training loss": loss.detach().item(), "Average Training  loss":total_loss.item()/(i+1), "Average Training Perplexity":torch.exp(total_loss/(i+1)),  "Training Perplexity":torch.exp(loss.detach())}, step=step)
+                norm, norms_dict = get_norms(model.named_parameters(), args.device)
+                wandb.log({"weights norm": norm, "learning_rate": learning_rate, "Training loss": loss.detach().item(), "Average Training  loss":total_loss.item()/(i+1), "Average Training Perplexity":torch.exp(total_loss/(i+1)),  "Training Perplexity":torch.exp(loss.detach()), **norms_dict}, step=step)
 
             if args.validate_every != 0 and i != 0 and i % args.validate_every == 0 or os.path.exists("end"):
                 print(f"time:{time.time()-t0} seconds")
@@ -236,13 +236,13 @@ if __name__ == "__main__":
     parser.add_argument("--res_drop", type=float, default=0.2)
 
     # Optim args
-    learning_rate = 0.005
+    learning_rate = 0.0005
     parser.add_argument("--learning_rate", type=float, default=learning_rate)
     parser.add_argument("--learning_rate_min", type=float, default=learning_rate*.1)
     parser.add_argument("--beta1", type=float, default=0.9)
     parser.add_argument("--beta2", type= float, default= 0.999)
 
-    parser.add_argument("--weight_decay", type=float, default=0.024358887816417717)
+    parser.add_argument("--weight_decay", type=float, default=0.01)
 
     # Misc args
     parser.add_argument("--seed", type=int, default=123)

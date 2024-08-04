@@ -350,7 +350,7 @@ def run_rmsnorm(
     """
 
     rmsnorm = RMSnorm(d_model, eps)
-    rmsnorm.gi.data[:] = weights["weight"]
+    rmsnorm.ln.data[:] = weights["weight"]
     return rmsnorm(in_features) 
 
 

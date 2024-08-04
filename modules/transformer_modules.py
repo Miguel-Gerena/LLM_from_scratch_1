@@ -1,6 +1,8 @@
 from typing import Tuple
 from torch import nn
+from torch.nn import functional as F
 import torch
+
 
 
 class RMSnorm(nn.Module):
@@ -10,9 +12,11 @@ class RMSnorm(nn.Module):
         self.eps = eps
     
     def forward(self, x:torch.FloatTensor) -> torch.tensor:
-        rms = torch.sqrt(torch.mean(torch.square(x), dim=-1, keepdim=True) + self.eps)
-        return torch.div(x, rms) * self.ln 
-
+        x_fp32 = x.float()
+        rms = (
+            x_fp32 * torch.rsqrt(x_fp32.pow(2).mean(-1, keepdim=True) + self.eps)
+        ).type_as(x)
+        return rms * self.ln
 
 def gelu(x:torch.FloatTensor) -> torch.tensor:
     return 0.5 * x * (1 + torch.erf(torch.div(x, torch.sqrt(torch.tensor(2)))))
@@ -25,7 +29,7 @@ class FF(nn.Module):
         self.ff2 = nn.Linear(d_ff, d_model, bias=False)
     
     def forward(self, x:torch.FloatTensor) -> torch.FloatTensor:
-        a = gelu(self.ff1(x))
+        a = F.gelu(self.ff1(x))
         return  self.ff2(a)
     
 def softmax(x:torch.FloatTensor, dim:int) -> torch.tensor:
@@ -111,6 +115,7 @@ class Transformer_block(nn.Module):
 
         self.mha = Multi_Head_Attention(d_model, num_heads, attn_drop)
         self.ff = FF(d_model, d_ff)
+        
         self.rms_norm1 = RMSnorm(d_model)
         self.rms_norm2 = RMSnorm(d_model)
         self.res_drop = nn.Dropout(res_drop if res_drop else 0) 

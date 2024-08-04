@@ -10,7 +10,7 @@ import pickle
 import gc
 from tqdm import tqdm
 
-from BPE_util import (BPETokenizerParams, build_pairs_and_locations,
+from modules.BPE_util import (BPETokenizerParams, build_pairs_and_locations,
                     generate_sentence_buckets, pre_tokenize, gpt2_bytes_to_unicode,
                     reduce_pairs_and_locations_from_buckets, get_regex_pattern) 
 

@@ -17,6 +17,48 @@ import pytest
 
 from tests.common import FIXTURES_PATH
 
+def test_rmsnorm():
+    reference_weights = torch.load(FIXTURES_PATH / "rmsnorm_weights.pt")
+    in_features = torch.load(FIXTURES_PATH / "in_features.pt")
+    expected_output = torch.load(FIXTURES_PATH / "rmsnorm_expected_output.pt")
+    d_model = 64
+    actual_output = run_rmsnorm(
+        d_model=d_model, eps=1e-5, weights=reference_weights, in_features=in_features
+    )
+    numpy.testing.assert_allclose(
+        actual_output.detach().numpy(), expected_output.detach().numpy(), atol=1e-6
+    )
+def test_gelu():
+    x = torch.tensor(
+        [
+            [0.2352, 0.9259, 0.5189, 0.4725, 0.9730],
+            [0.7581, 0.9692, 0.2129, 0.9345, 0.0149],
+        ]
+    )
+    expected_output = torch.tensor(
+        [
+            [
+                0.13946731388568878,
+                0.7617851495742798,
+                0.3622361421585083,
+                0.3221103549003601,
+                0.8121858239173889,
+            ],
+            [
+                0.5881373286247253,
+                0.8080969452857971,
+                0.1243969276547432,
+                0.7709409594535828,
+                0.007538566831499338,
+            ],
+        ]
+    )
+    actual_output = run_gelu(x)
+    numpy.testing.assert_allclose(
+        actual_output.detach().numpy(), expected_output.detach().numpy(), atol=1e-6
+    )
+
+test_gelu()
 
 def test_multihead_self_attention():
     reference_weights = torch.load(
