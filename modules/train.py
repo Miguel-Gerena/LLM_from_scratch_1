@@ -49,8 +49,8 @@ def main(args):
     critereon.to(device)
 
     if args.compile:
-        model = torch.compile(model, fullgraph=True)
-        critereon = torch.compile(critereon, fullgraph=True)
+        model = torch.compile(model, fullgraph=True, backend=args.backend, mode="reduce-overhead")
+        critereon = torch.compile(critereon, fullgraph=True, backend=args.backend,mode="reduce-overhead")
     
     train_data = np.load(args.train_data_path, mmap_mode="r").astype(np.int32)
     val_data = np.load(args.val_data_path, mmap_mode="r").astype(np.int32)
@@ -157,17 +157,18 @@ def evaluate(args, model:torch.nn.Module, dataloader_val, critereon:torch.nn.Mod
 
 def train(args, model:torch.nn.Module, optim:torch.optim.Optimizer, epochs:int, dataloader, dataloader_val, critereon:torch.nn.Module):
     print("training")
-    with torch.autocast(device_type=args.device, dtype=torch.bfloat16):
-        t0 = time.time()
-        total_loss = torch.tensor(0.0)
-        best_val_loss = float("inf")
-        for i, data in enumerate(tqdm(dataloader, total=args.training_steps)):
-            step = i * args.batch_size
-            # if  time.time() - t0 >= args.max_wall_clock:
-            if i == args.training_steps:
-                break
-            learning_rate = cosine_learning_warmup(i, args.learning_rate, args.learning_rate_min, args.warm_up_steps, args.training_steps * 0.9)
-            optim.param_groups[0]["lr"] = learning_rate
+    t0 = time.time()
+    total_loss = torch.tensor(0.0)
+    best_val_loss = float("inf")
+    for i, data in enumerate(tqdm(dataloader, total=args.training_steps)):
+        step = i * args.batch_size
+        # if  time.time() - t0 >= args.max_wall_clock:
+        if i == args.training_steps:
+            break
+        learning_rate = cosine_learning_warmup(i, args.learning_rate, args.learning_rate_min, args.warm_up_steps, args.training_steps * 0.9)
+        optim.param_groups[0]["lr"] = learning_rate
+
+        with torch.autocast(device_type=args.device, dtype=torch.bfloat16):
             if args.num_experts > 1:
                 x, y, class_id = data
                 x, y = x.to(args.device, non_blocking=True), y.to(args.device, non_blocking=True)
@@ -177,32 +178,33 @@ def train(args, model:torch.nn.Module, optim:torch.optim.Optimizer, epochs:int, 
                 x, y = x.to(args.device, non_blocking=True), y.to(args.device, non_blocking=True)
                 logits = model(x)
 
-            optim.zero_grad()
-            loss = critereon(logits, y)
-            loss.backward()
+        # change optimizer precison to float32
+        optim.zero_grad()
+        loss = critereon(logits, y)
+        loss.backward()
 
-            if torch.isnan(loss):
-                print("Nan in loss.  Exiting...")
-                sys.exit(0)
-                
-            total_loss += loss.detach().cpu()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1)
-            optim.step()
+        if torch.isnan(loss):
+            print("Nan in loss.  Exiting...")
+            sys.exit(0)
+            
+        total_loss += loss.detach().cpu()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1)
+        optim.step()
 
-            if i%args.log_iter==0 and i != 0 and args.wandb: 
-                norm, norms_dict = get_norms(model.named_parameters(), args.device)
-                wandb.log({"weights norm": norm, "learning_rate": learning_rate, "Training loss": loss.detach().item(), "Average Training  loss":total_loss.item()/(i+1), "Average Training Perplexity":torch.exp(total_loss/(i+1)),  "Training Perplexity":torch.exp(loss.detach()), **norms_dict}, step=step)
+        if i%args.log_iter==0 and i != 0 and args.wandb: 
+            norm, norms_dict = get_norms(model.named_parameters(), args.device)
+            wandb.log({"weights norm": norm, "learning_rate": learning_rate, "Training loss": loss.detach().item(), "Average Training  loss":total_loss.item()/(i+1), "Average Training Perplexity":torch.exp(total_loss/(i+1)),  "Training Perplexity":torch.exp(loss.detach()), **norms_dict}, step=step)
 
-            if args.validate_every != 0 and i != 0 and i % args.validate_every == 0 or os.path.exists("end"):
-                print(f"time:{time.time()-t0} seconds")
-                model.eval()
-                best_val_loss = validate_and_save(args, model, optim, dataloader_val, critereon, step, best_val_loss)
-                torch._dynamo.reset()
-                model.train()
+        if args.validate_every != 0 and i != 0 and i % args.validate_every == 0 or os.path.exists("end"):
+            print(f"time:{time.time()-t0} seconds")
+            model.eval()
+            best_val_loss = validate_and_save(args, model, optim, dataloader_val, critereon, step, best_val_loss)
+            torch._dynamo.reset()
+            model.train()
 
-        print(f"Total Train time:{time.time()-t0} seconds")
-        model.eval()
-        best_val_loss = validate_and_save(args, model, optim, dataloader_val, critereon, step, best_val_loss, "_final")
+    print(f"Total Train time:{time.time()-t0} seconds")
+    model.eval()
+    best_val_loss = validate_and_save(args, model, optim, dataloader_val, critereon, step, best_val_loss, "_final")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -228,8 +230,8 @@ if __name__ == "__main__":
     parser.add_argument("--pre_norm", type=bool, default=True)
     parser.add_argument("--context_length", type=int, default=256)
     parser.add_argument("--vocab_size", type=int, default=50257)
-    parser.add_argument("--num_layers", type=int, default=4)
-    parser.add_argument("--num_heads", type=int, default=16)
+    parser.add_argument("--num_layers", type=int, default=2)
+    parser.add_argument("--num_heads", type=int, default=8)
     parser.add_argument("--d_model", type=int, default=512)
     parser.add_argument("--d_ff", type=int, default=2048)
     parser.add_argument("--attn_drop", type=float, default=0.133468341589087)

@@ -2,11 +2,12 @@ from typing import Tuple
 from torch import nn
 from torch.nn import functional as F
 import torch
+from math import sqrt
 
 
 
 class RMSnorm(nn.Module):
-    def __init__(self, dim:int, eps:float=1e-5):
+    def __init__(self, dim:int, eps:float=1e-2):
         super().__init__()
         self.ln = nn.Parameter(torch.ones(dim))
         self.eps = eps
@@ -88,6 +89,11 @@ class Multi_Head_Attention(nn.Module):
         self.fused_qkv.weight.data[0:self.d_model, :] =  Q.view(self.d_model, self.d_model)
         self.fused_qkv.weight.data[self.d_model:2*self.d_model, :] =  K.view(self.d_model, self.d_model)
         self.fused_qkv.weight.data[2*self.d_model:3*self.d_model, :] =  V.view(self.d_model, self.d_model)
+    
+    def reset_parameters(self):
+        for qkv in range(self.fused_qkv.shape[0]):
+            for head in range(self.fused_qkv.shape[1]):
+                nn.init.kaiming_uniform_(self.fused_qkv[qkv, head], a=sqrt(5))
 
     def forward(self, x:torch.FloatTensor) -> torch.FloatTensor:
         B, source_seq_len = x.shape[0:2]

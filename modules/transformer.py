@@ -31,7 +31,7 @@ class Transformer(nn.Module):
                     new_weights[new_key] = value
             block.set_weights_from_dict(new_weights)
         self.final_norm.ln.data[:] = weights["ln_final.weight"]
-
+    
     def forward(self, x: torch.tensor) -> torch.tensor:
         x = self.embed_drop(self.embed_layer(x) + self.pos_embeding[None, :x.shape[-1], :])
         x = self.transformer_blocks(x)
