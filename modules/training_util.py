@@ -21,11 +21,12 @@ def clip_gradient(params: Iterable[torch.nn.Parameter], maxl2:float, eps:float=1
             if p.requires_grad:
                 p.grad[:] = torch.div(maxl2, (l2 + eps)) 
 
-def save_checkpoint(model:torch.nn.Module, path:str, epoch:int, optim:torch.optim.Optimizer, args) -> None:
+def save_checkpoint(model:torch.nn.Module, path:str, epoch:int, optim:torch.optim.Optimizer, args, scaler=None) -> None:
     torch.save({
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optim.state_dict(),
+            'scaler_state_dict': scaler.state_dict() if scaler else {},
             "args":args,
             "numpy_seed_state":np.random.get_state(),
             "torch_rng_state":torch.get_rng_state(),

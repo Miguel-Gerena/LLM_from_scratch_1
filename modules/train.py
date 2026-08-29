@@ -49,8 +49,8 @@ def main(args):
     critereon.to(device)
 
     if args.compile:
-        model = torch.compile(model, fullgraph=True, backend=args.backend, mode="reduce-overhead")
-        critereon = torch.compile(critereon, fullgraph=True, backend=args.backend,mode="reduce-overhead")
+        model = torch.compile(model, fullgraph=True, backend=args.backend)
+        critereon = torch.compile(critereon, fullgraph=True, backend=args.backend)
     
     train_data = np.load(args.train_data_path, mmap_mode="r").astype(np.int32)
     val_data = np.load(args.val_data_path, mmap_mode="r").astype(np.int32)
@@ -62,8 +62,8 @@ def main(args):
     total_num_parameters_in_embed_layer = sum([torch.numel(p) if p.requires_grad else 0 for p in model.get_submodule("embed_layer").parameters()])
     
     # args.d_model = args.d_model - 1 if args.d_model%2!= 0 else args.d_model
-    # args.training_steps = 47844 * 48//args.batch_size //2 # 13.28 it/s
-    args.training_steps = len(train_data) # 13.28 it/s
+    args.training_steps = 327680000 / args.batch_size // args.context_length
+    # args.training_steps = len(train_data) # 13.28 it/s
     args.validate_every = args.validate_every * 48//args.batch_size
     if args.wandb:
         args.wandb_instance = wandb.init(
@@ -120,8 +120,9 @@ def validate(args, model:torch.nn.Module, dataloader_val, critereon:torch.nn.Mod
     total_loss = torch.tensor(0.0)
     with torch.no_grad():
         for i, (x, y) in enumerate(tqdm(dataloader_val, total=args.val_steps)):
-            x, y = x.to(args.device, non_blocking=True), y.to(args.device, non_blocking=True)
-            logits = model(x)
+            with torch.autocast(device_type=args.device, dtype=torch.bfloat16):
+                x, y = x.to(args.device, non_blocking=True), y.to(args.device, non_blocking=True)
+                logits = model(x)
             loss = critereon(logits, y)
             total_loss += loss.detach().cpu()
             if i == args.val_steps:
@@ -131,14 +132,14 @@ def validate(args, model:torch.nn.Module, dataloader_val, critereon:torch.nn.Mod
                 torch.cuda.empty_cache()
                 return total_loss.item()/(i+1)
 
-def validate_and_save(args, model:torch.nn.Module, optim:torch.optim.Optimizer, dataloader_val, critereon:torch.nn.Module, step:int=0, best_val_loss:float=0, postfix:str=""):
+def validate_and_save(args, model:torch.nn.Module, optim:torch.optim.Optimizer, dataloader_val, critereon:torch.nn.Module, step:int=0, best_val_loss:float=0, postfix:str="", scaler=None):
     val_loss = validate(args, model, dataloader_val, critereon, step)
     filename = f"weights/{wandb.run.name}{postfix}" if args.wandb else "weights/current_run"
     if best_val_loss > val_loss:
         best_val_loss = val_loss
         with open(f"{filename}.txt", "w") as F:
             F.write(f"{args}")
-        save_checkpoint(model, f"{filename}.weights", step, optim, args)
+        save_checkpoint(model, f"{filename}.weights", step, optim, args, scaler)
 
     if args.wandb:
         model_art = wandb.Artifact('model', type='model')   
@@ -157,13 +158,17 @@ def evaluate(args, model:torch.nn.Module, dataloader_val, critereon:torch.nn.Mod
 
 def train(args, model:torch.nn.Module, optim:torch.optim.Optimizer, epochs:int, dataloader, dataloader_val, critereon:torch.nn.Module):
     print("training")
+    scaler = torch.cuda.amp.GradScaler()
     t0 = time.time()
     total_loss = torch.tensor(0.0)
     best_val_loss = float("inf")
     for i, data in enumerate(tqdm(dataloader, total=args.training_steps)):
         step = i * args.batch_size
         # if  time.time() - t0 >= args.max_wall_clock:
-        if i == args.training_steps:
+        if i >= args.training_steps:
+            break
+        elif args.batch_size * (i) * args.context_length >= 327680000:
+            print(f"327,680,000 tokens processed")
             break
         learning_rate = cosine_learning_warmup(i, args.learning_rate, args.learning_rate_min, args.warm_up_steps, args.training_steps * 0.9)
         optim.param_groups[0]["lr"] = learning_rate
@@ -179,17 +184,21 @@ def train(args, model:torch.nn.Module, optim:torch.optim.Optimizer, epochs:int, 
                 logits = model(x)
 
         # change optimizer precison to float32
-        optim.zero_grad()
         loss = critereon(logits, y)
-        loss.backward()
+        optim.zero_grad()
+        scaler.scale(loss).backward()
+        # loss.backward()
 
         if torch.isnan(loss):
             print("Nan in loss.  Exiting...")
             sys.exit(0)
             
         total_loss += loss.detach().cpu()
+        scaler.unscale_(optim)
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1)
-        optim.step()
+        scaler.step(optim)
+        scaler.update()
+        # optim.step()
 
         if i%args.log_iter==0 and i != 0 and args.wandb: 
             norm, norms_dict = get_norms(model.named_parameters(), args.device)
@@ -198,7 +207,7 @@ def train(args, model:torch.nn.Module, optim:torch.optim.Optimizer, epochs:int, 
         if args.validate_every != 0 and i != 0 and i % args.validate_every == 0 or os.path.exists("end"):
             print(f"time:{time.time()-t0} seconds")
             model.eval()
-            best_val_loss = validate_and_save(args, model, optim, dataloader_val, critereon, step, best_val_loss)
+            best_val_loss = validate_and_save(args, model, optim, dataloader_val, critereon, step, best_val_loss, scaler)
             torch._dynamo.reset()
             model.train()
 
@@ -216,9 +225,9 @@ if __name__ == "__main__":
     # Training args
     parser.add_argument("--max_wall_clock", type=int, default=3600)
     parser.add_argument("--log_iter", type=int, default=200)
-    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--batch_size", type=int, default=100)
     parser.add_argument("--batch_size_val", type=int, default=64)
-    parser.add_argument("--warm_up_steps", type=int, default=200)
+    parser.add_argument("--warm_up_steps", type=int, default=1000)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--validate_every", type=int, default=10000)
     parser.add_argument("--val_steps", type=int, default=1000)
@@ -230,15 +239,15 @@ if __name__ == "__main__":
     parser.add_argument("--pre_norm", type=bool, default=True)
     parser.add_argument("--context_length", type=int, default=256)
     parser.add_argument("--vocab_size", type=int, default=50257)
-    parser.add_argument("--num_layers", type=int, default=2)
-    parser.add_argument("--num_heads", type=int, default=8)
+    parser.add_argument("--num_layers", type=int, default=4)
+    parser.add_argument("--num_heads", type=int, default=16)
     parser.add_argument("--d_model", type=int, default=512)
     parser.add_argument("--d_ff", type=int, default=2048)
     parser.add_argument("--attn_drop", type=float, default=0.133468341589087)
     parser.add_argument("--res_drop", type=float, default=0.2)
 
     # Optim args
-    learning_rate = 0.0005
+    learning_rate = 0.001
     parser.add_argument("--learning_rate", type=float, default=learning_rate)
     parser.add_argument("--learning_rate_min", type=float, default=learning_rate*.1)
     parser.add_argument("--beta1", type=float, default=0.9)

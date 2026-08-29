@@ -7,7 +7,7 @@ from math import sqrt
 
 
 class RMSnorm(nn.Module):
-    def __init__(self, dim:int, eps:float=1e-2):
+    def __init__(self, dim:int, eps:float=1e-6):
         super().__init__()
         self.ln = nn.Parameter(torch.ones(dim))
         self.eps = eps
@@ -91,9 +91,10 @@ class Multi_Head_Attention(nn.Module):
         self.fused_qkv.weight.data[2*self.d_model:3*self.d_model, :] =  V.view(self.d_model, self.d_model)
     
     def reset_parameters(self):
-        for qkv in range(self.fused_qkv.shape[0]):
-            for head in range(self.fused_qkv.shape[1]):
-                nn.init.kaiming_uniform_(self.fused_qkv[qkv, head], a=sqrt(5))
+        dim = [0]
+        [dim.append(id) for id in (self.d_model, self.d_model*2, self.d_model*3)]
+        for i in range(1, len(dim)):
+            nn.init.kaiming_uniform_(self.fused_qkv.weight.data[dim[i-1]:dim[i], :], a=sqrt(5))
 
     def forward(self, x:torch.FloatTensor) -> torch.FloatTensor:
         B, source_seq_len = x.shape[0:2]
@@ -120,6 +121,7 @@ class Transformer_block(nn.Module):
         self.d_ff = d_ff
 
         self.mha = Multi_Head_Attention(d_model, num_heads, attn_drop)
+        self.mha.reset_parameters()
         self.ff = FF(d_model, d_ff)
         
         self.rms_norm1 = RMSnorm(d_model)
